@@ -2,3 +2,6 @@ yt-dlp
 imageio-ffmpeg
 fastapi
 uvicorn[standard]
+httpx
+slowapi
+starlette

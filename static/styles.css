@@ -16,7 +16,7 @@ a{color:inherit;text-decoration:none}
 /* ===== header (YouTube top bar) ===== */
 .yt-header{position:sticky;top:0;z-index:20;height:56px;display:flex;align-items:center;
   gap:16px;padding:0 16px;background:var(--bg)}
-.hdr-left{display:flex;align-items:center;gap:14px;min-width:170px}
+.hdr-left{display:flex;align-items:center;gap:10px;min-width:140px}
 .icon-btn{background:none;border:0;color:var(--ink);cursor:pointer;padding:8px;border-radius:50%;
   display:flex;align-items:center;justify-content:center}
 .icon-btn:hover{background:#ffffff14}
@@ -27,10 +27,15 @@ a{color:inherit;text-decoration:none}
 .logo-tld{font-size:11px;color:var(--muted);vertical-align:super;margin-left:1px}
 
 .search{flex:1;display:flex;justify-content:center;align-items:center;max-width:680px;margin:0 auto}
+.search-wrap{flex:1;position:relative;display:flex;align-items:center}
 .search-input{flex:1;height:40px;background:#121212;border:1px solid var(--line);border-right:0;
-  border-radius:40px 0 0 40px;padding:0 16px;color:var(--ink);font-size:16px;outline:none}
+  border-radius:40px 0 0 40px;padding:0 36px 0 16px;color:var(--ink);font-size:16px;outline:none}
 .search-input:focus{border-color:#1aa64a;box-shadow:inset 0 0 0 1px #1aa64a}
 .search-input::placeholder{color:#7a7a7a}
+.url-clear{position:absolute;right:8px;background:none;border:0;color:var(--muted);
+  font-size:18px;cursor:pointer;line-height:1;padding:4px;display:flex;align-items:center;
+  border-radius:50%}
+.url-clear:hover{color:var(--ink);background:#ffffff14}
 .search-btn{width:64px;height:40px;background:var(--elev2);border:1px solid var(--line);
   border-radius:0 40px 40px 0;color:var(--ink);cursor:pointer;display:flex;align-items:center;justify-content:center}
 .search-btn:hover{background:#333}
@@ -69,7 +74,11 @@ a{color:inherit;text-decoration:none}
 .loading{display:flex;gap:12px;align-items:center;justify-content:center;padding:40px;color:var(--muted)}
 .spinner{width:22px;height:22px;border:3px solid #333;border-top-color:var(--red);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.banner-err{background:#2a1515;border:1px solid #5a2a2a;color:#ffb3b3;padding:14px 16px;border-radius:12px}
+.banner-err{background:#2a1515;border:1px solid #5a2a2a;color:#ffb3b3;padding:14px 16px;border-radius:12px;
+  display:flex;align-items:center;justify-content:space-between;gap:12px}
+.err-close{background:none;border:0;color:#ffb3b3;font-size:20px;cursor:pointer;line-height:1;padding:0 4px;
+  flex:none;opacity:.7}
+.err-close:hover{opacity:1}
 
 /* result (watch-page style) */
 .thumb-wrap{position:relative;width:100%;aspect-ratio:16/9;border-radius:12px;overflow:hidden;background:#000}
@@ -103,7 +112,10 @@ a{color:inherit;text-decoration:none}
 
 /* downloads list */
 .downloads{margin-top:34px}
-.dl-h{font-size:16px;font-weight:700;margin:0 0 14px}
+.dl-hrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.dl-h{font-size:16px;font-weight:700;margin:0}
+.btn-text{background:none;border:0;color:var(--muted);font:inherit;font-size:13px;cursor:pointer;padding:4px 8px;border-radius:8px}
+.btn-text:hover{color:var(--ink);background:#ffffff10}
 .job{display:flex;gap:14px;align-items:center;background:var(--elev);border:1px solid var(--line);border-radius:var(--radius);padding:12px;margin-bottom:12px}
 .job-thumb{width:120px;height:68px;border-radius:8px;object-fit:cover;background:#000;flex:none}
 .job-main{flex:1;min-width:0}
@@ -115,11 +127,15 @@ a{color:inherit;text-decoration:none}
 @keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
 .job-status{font-size:12px;margin-top:7px}
 .job-status.err{color:#ff8a8a}
-.job-action{flex:none}
+.job-action{flex:none;display:flex;flex-direction:column;gap:6px;align-items:flex-end}
 .btn-save{display:inline-flex;align-items:center;gap:6px;background:var(--red);color:#fff;border:0;
   border-radius:20px;padding:9px 16px;font:inherit;font-weight:600;font-size:13px;cursor:pointer;white-space:nowrap}
 .btn-save:hover{background:var(--red-h)}
 .chip-done{color:#7ee07e;font-size:13px;font-weight:600}
+.btn-cancel{background:var(--elev2);border:1px solid var(--line);color:var(--muted);
+  border-radius:20px;padding:6px 14px;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.btn-cancel:hover:not(:disabled){background:#333;color:var(--ink)}
+.btn-cancel:disabled{opacity:.4;cursor:default}
 
 /* advanced options + playlist */
 .adv{margin:6px 0 14px;border-top:1px solid var(--line);padding-top:10px}
@@ -147,6 +163,22 @@ a{color:inherit;text-decoration:none}
 .pl-item{display:flex;justify-content:space-between;gap:10px;font-size:13px;color:#cfcfcf;
   padding:7px 2px;border-bottom:1px solid var(--line)}
 .pl-item .d{color:var(--muted)}
+
+/* advanced toggle arrow rotation */
+.adv summary::after{content:" ▾";transition:transform .2s;display:inline-block}
+.adv[open] summary::after{transform:rotate(180deg)}
+
+/* paste-detected pill */
+.paste-pill{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+  background:var(--elev2);border:1px solid var(--grn-line);color:var(--ink);
+  border-radius:var(--pill);padding:10px 14px;font-size:13px;gap:8px;align-items:center;
+  box-shadow:0 4px 24px #0008;z-index:100;max-width:90vw}
+.paste-use{background:var(--red);color:#fff;border:0;border-radius:20px;padding:5px 12px;
+  font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.paste-use:hover{background:var(--red-h)}
+.paste-dismiss{background:none;border:0;color:var(--muted);font-size:18px;cursor:pointer;
+  line-height:1;padding:0 2px}
+.paste-dismiss:hover{color:var(--ink)}
 
 /* trim range slider — two handles layered over the timestamp inputs */
 .tin{max-width:120px}

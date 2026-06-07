@@ -54,13 +54,29 @@ async function loadSession() {
 }
 function refreshCredits(balance) {
   $("#mythos-credits").textContent = "◎ " + (balance == null ? "—" : balance) + " cr";
-  $("#topupBtn").classList.toggle("hidden", balance == null || balance >= cost);
+  // Show top up when balance won't cover current selected cost (not just base cost)
+  const needed = clientCost();
+  $("#topupBtn").classList.toggle("hidden", balance == null || balance >= needed);
 }
 async function topUp() {
   const d = await (await fetch("/api/topup", { method: "POST" })).json();
   refreshCredits(d.balance);
-  hide("#error");
+  hideError();
 }
+
+// ---- error banner ----------------------------------------------------------
+function showError(msg) {
+  const el = $("#error");
+  el.textContent = "";
+  const txt = document.createElement("span");
+  txt.textContent = "⚠ " + msg;
+  const x = document.createElement("button");
+  x.className = "err-close"; x.textContent = "×"; x.setAttribute("aria-label", "Dismiss");
+  x.onclick = hideError;
+  el.appendChild(txt); el.appendChild(x);
+  show("#error");
+}
+function hideError() { hide("#error"); }
 
 // ---- premium options + live credit cost (mirrors server cost_for) ----------
 function gatherOpts() {
@@ -83,7 +99,32 @@ function clientCost() {
   if (o.sponsorblock) c += 1;
   return c;
 }
-function updateCost() { $("#dlcost").textContent = "· " + clientCost() + " cr"; }
+function updateCost() {
+  $("#dlcost").textContent = "· " + clientCost() + " cr";
+  // Re-evaluate top-up button whenever cost changes
+  const pill = $("#mythos-credits").textContent;
+  const m = pill.match(/◎ (\d+)/);
+  if (m) refreshCredits(parseInt(m[1], 10));
+}
+
+// ---- playlist live cost ---------------------------------------------------
+function updatePlaylistCost() {
+  if (!current || !current.is_playlist) return;
+  const count = current.count || 1;
+  const kw = $("#plKw").value.trim();
+  const minMin = parseFloat($("#plMin").value);
+  let n = count;
+  if ((kw || minMin) && current.items) {
+    n = current.items.filter((it) => {
+      if (minMin && (it.duration || 0) <= minMin * 60) return false;
+      if (kw && !(it.title || "").toLowerCase().includes(kw.toLowerCase())) return false;
+      return true;
+    }).length || 1;
+  }
+  n = Math.min(n, current.cap || 10);
+  const total = n * cost;
+  $("#plcost").textContent = `· ${total} cr (${n} video${n === 1 ? "" : "s"})`;
+}
 
 // ---- trim slider (two handles, two-way synced with the text inputs) --------
 let trimDur = 0;
@@ -105,8 +146,9 @@ function paintRange() {
 }
 function onSlide(which) {            // handle moved -> write the text input (extreme = empty = no trim)
   let rs = +$("#rangeStart").value, re = +$("#rangeEnd").value;
-  if (which === "start" && rs > re - 1) { rs = Math.max(0, re - 1); $("#rangeStart").value = rs; }
-  if (which === "end" && re < rs + 1) { re = Math.min(trimDur, rs + 1); $("#rangeEnd").value = re; }
+  const MIN_GAP = Math.max(1, Math.min(5, trimDur / 20));
+  if (which === "start" && rs > re - MIN_GAP) { rs = Math.max(0, re - MIN_GAP); $("#rangeStart").value = rs; }
+  if (which === "end" && re < rs + MIN_GAP) { re = Math.min(trimDur, rs + MIN_GAP); $("#rangeEnd").value = re; }
   $("#trimStart").value = rs > 0 ? fmtClock(rs) : "";
   $("#trimEnd").value = re < trimDur ? fmtClock(re) : "";
   paintRange(); updateCost();
@@ -119,7 +161,55 @@ function onTrimText() {              // text typed -> move the handles
   paintRange(); updateCost();
 }
 
+// ---- URL field helpers ----------------------------------------------------
+function setUrl(url) {
+  $("#url").value = url;
+  $("#url-clear").style.display = url ? "flex" : "none";
+}
+function clearUrl() {
+  setUrl("");
+  hide("#result"); hide("#playlist"); hide("#error");
+  show("#empty");
+  $("#url").focus();
+}
+
+// ---- auto-paste detection -------------------------------------------------
+async function checkClipboard() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text && text !== $("#url").value && /^https?:\/\//i.test(text.trim())) {
+      showPastePill(text.trim());
+    }
+  } catch { /* clipboard permission denied — ignore */ }
+}
+function showPastePill(url) {
+  let pill = $("#paste-pill");
+  if (!pill) {
+    pill = document.createElement("div");
+    pill.id = "paste-pill";
+    pill.className = "paste-pill";
+    document.body.appendChild(pill);
+  }
+  pill.innerHTML = "";
+  const lbl = document.createElement("span");
+  lbl.textContent = "Paste detected — ";
+  const host = document.createElement("b");
+  try { host.textContent = new URL(url).hostname; } catch { host.textContent = url.slice(0, 40); }
+  const useBtn = document.createElement("button");
+  useBtn.className = "paste-use"; useBtn.textContent = "Use it";
+  useBtn.onclick = () => { setUrl(url); fetchInfo(url); pill.remove(); };
+  const dismiss = document.createElement("button");
+  dismiss.className = "paste-dismiss"; dismiss.textContent = "×";
+  dismiss.onclick = () => pill.remove();
+  pill.appendChild(lbl); pill.appendChild(host); pill.appendChild(useBtn); pill.appendChild(dismiss);
+  pill.style.display = "flex";
+  setTimeout(() => pill.remove(), 8000);
+}
+
+window.addEventListener("focus", checkClipboard);
+
 async function fetchInfo(url) {
+  if (!url) return;
   hide("#empty"); hide("#result"); hide("#playlist"); hide("#error"); show("#loading");
   try {
     const r = await fetch("/api/info", {
@@ -132,8 +222,7 @@ async function fetchInfo(url) {
     if (data.is_playlist) renderPlaylist(data);
     else renderSingle(data);
   } catch (e) {
-    $("#error").textContent = "⚠ " + e.message;
-    show("#error");
+    showError(e.message);
   } finally {
     hide("#loading");
   }
@@ -179,13 +268,13 @@ function renderPlaylist(d) {
   $("#pl-thumb").src = d.thumbnail || "";
   $("#pl-count").textContent = (d.count || "?") + " videos";
   $("#pl-title").textContent = d.title;
-  $("#pl-by").textContent = [d.uploader, `up to ${d.cap} per batch · 2 cr each`].filter(Boolean).join(" • ");
+  $("#pl-by").textContent = [d.uploader, `up to ${d.cap} per batch · ${cost} cr each`].filter(Boolean).join(" • ");
   const items = d.items || [];
   $("#pl-items").innerHTML = items.map((it) =>
     `<div class="pl-item"><span>${it.title}</span><span class="d">${it.duration_str || ""}</span></div>`).join("")
     + (((d.count || 0) > items.length) ? `<div class="pl-item d">+ ${d.count - items.length} more…</div>` : "");
   $("#plMin").value = ""; $("#plKw").value = "";
-  $("#plcost").textContent = "";
+  updatePlaylistCost();
   show("#playlist");
 }
 
@@ -198,12 +287,12 @@ async function startDownload() {
     body: JSON.stringify({ url: current.webpage_url, choice: selected, ...o }),
   });
   const data = await r.json();
-  if (r.status === 402) { $("#error").textContent = "⚠ " + (data.detail || "Out of Mythos credits"); show("#error"); await loadSession(); return; }
-  if (!r.ok) { alert(data.detail || "Download failed to start"); return; }
+  if (r.status === 402) { showError(data.detail || "Out of Mythos credits"); await loadSession(); return; }
+  if (!r.ok) { showError(data.detail || "Download failed to start"); return; }
   if (data.balance != null) refreshCredits(data.balance);
   const qLabel = (current.qualities.find((q) => q.id === selected) || {}).label || selected;
   const tags = [o.music && "music", o.subs && "subs", (o.start || o.end) && "clip", o.sponsorblock && "no-sponsor"].filter(Boolean);
-  addJob(data.job_id, current.thumbnail, current.title, [qLabel, ...tags].join(" · "));
+  addJob(data.job_id, current.thumbnail, current.title, [qLabel, ...tags].join(" · "), { url: current.webpage_url, choice: selected, ...o });
   btn.animate([{ transform: "scale(.96)" }, { transform: "scale(1)" }], { duration: 150 });
 }
 
@@ -218,43 +307,115 @@ async function startPlaylist() {
     }),
   });
   const data = await r.json();
-  if (r.status === 402) { $("#error").textContent = "⚠ " + (data.detail || "Out of Mythos credits"); show("#error"); await loadSession(); return; }
-  if (!r.ok) { alert(data.detail || "Batch failed to start"); return; }
+  if (r.status === 402) { showError(data.detail || "Out of Mythos credits"); await loadSession(); return; }
+  if (!r.ok) { showError(data.detail || "Batch failed to start"); return; }
   if (data.balance != null) refreshCredits(data.balance);
-  addJob(data.job_id, current.thumbnail, current.title, `batch · charged ${data.charged} cr`);
+  addJob(data.job_id, current.thumbnail, current.title, `batch · charged ${data.charged} cr`, null);
 }
 
-function addJob(jobId, thumb, title, label) {
+// ---- job localStorage persistence -----------------------------------------
+const LS_KEY = "pluck_jobs_v1";
+function saveJobToStorage(jobId, thumb, title, label) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(LS_KEY) || "[]");
+    stored.unshift({ jobId, thumb, title, label, ts: Date.now() });
+    // Keep last 50 entries, drop older than 24h
+    const cutoff = Date.now() - 86400000;
+    localStorage.setItem(LS_KEY, JSON.stringify(stored.filter((j) => j.ts > cutoff).slice(0, 50)));
+  } catch { /* storage quota */ }
+}
+function removeJobFromStorage(jobId) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(LS_KEY) || "[]");
+    localStorage.setItem(LS_KEY, JSON.stringify(stored.filter((j) => j.jobId !== jobId)));
+  } catch {}
+}
+
+function addJob(jobId, thumb, title, label, retryParams) {
   show("#downloads");
   const el = document.createElement("div");
   el.className = "job";
-  el.innerHTML = `
-    <img class="job-thumb" src="${thumb || ""}" alt="">
-    <div class="job-main">
-      <div class="job-title">${title}</div>
-      <div class="job-sub"><span>${label}</span><span class="js-size"></span><span class="js-speed"></span></div>
-      <div class="bar indet"><span></span></div>
-      <div class="job-status">Starting…</div>
-    </div>
-    <div class="job-action"></div>`;
+  el.dataset.jobId = jobId;
+
+  const thumbEl = document.createElement("img");
+  thumbEl.className = "job-thumb"; thumbEl.alt = "";
+  thumbEl.src = thumb || "";
+
+  const main = document.createElement("div");
+  main.className = "job-main";
+
+  const titleEl = document.createElement("div");
+  titleEl.className = "job-title";
+  titleEl.textContent = title;  // textContent — no XSS
+
+  const sub = document.createElement("div");
+  sub.className = "job-sub";
+  const subLabel = document.createElement("span");
+  subLabel.textContent = label;
+  const sizeEl = document.createElement("span"); sizeEl.className = "js-size";
+  const speedEl = document.createElement("span"); speedEl.className = "js-speed";
+  sub.appendChild(subLabel); sub.appendChild(sizeEl); sub.appendChild(speedEl);
+
+  const bar = document.createElement("div"); bar.className = "bar indet";
+  const fill = document.createElement("span"); bar.appendChild(fill);
+
+  const status = document.createElement("div"); status.className = "job-status";
+  status.textContent = "Starting…";
+
+  main.appendChild(titleEl); main.appendChild(sub); main.appendChild(bar); main.appendChild(status);
+
+  const action = document.createElement("div"); action.className = "job-action";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn-cancel"; cancelBtn.textContent = "Cancel";
+  cancelBtn.onclick = () => cancelJob(jobId, el, cancelBtn);
+  action.appendChild(cancelBtn);
+
+  el.appendChild(thumbEl); el.appendChild(main); el.appendChild(action);
   $("#jobs").prepend(el);
-  pollJob(jobId, el);
+  saveJobToStorage(jobId, thumb, title, label);
+  pollJob(jobId, el, { bar, fill, status, sizeEl, speedEl, action, cancelBtn }, retryParams);
 }
 
-function pollJob(jobId, el) {
-  const bar = el.querySelector(".bar");
-  const fill = el.querySelector(".bar > span");
-  const status = el.querySelector(".job-status");
-  const sizeEl = el.querySelector(".js-size");
-  const speedEl = el.querySelector(".js-speed");
-  const action = el.querySelector(".job-action");
+async function cancelJob(jobId, el, btn) {
+  btn.disabled = true;
+  await fetch("/api/jobs/" + jobId, { method: "DELETE" });
+  // poll will detect "cancelled" status and update UI
+}
 
+function pollJob(jobId, el, { bar, fill, status, sizeEl, speedEl, action, cancelBtn }, retryParams) {
+  let failCount = 0;
   const timer = setInterval(async () => {
     let j;
-    try { j = await (await fetch("/api/jobs/" + jobId)).json(); }
-    catch { return; }
+    try {
+      const res = await fetch("/api/jobs/" + jobId);
+      if (res.status === 404) {
+        // Server restarted — mark stale
+        clearInterval(timer);
+        bar.classList.remove("indet"); fill.style.width = "0";
+        status.className = "job-status err";
+        status.textContent = "⚠ Lost — server restarted";
+        action.innerHTML = "";
+        removeJobFromStorage(jobId);
+        return;
+      }
+      j = await res.json();
+      failCount = 0;
+    } catch {
+      if (++failCount > 5) {
+        clearInterval(timer);
+        status.textContent = "⚠ Lost connection";
+      }
+      return;
+    }
 
-    if (j.playlist && (j.status === "downloading" || j.status === "processing")) {
+    if (j.status === "cancelled") {
+      clearInterval(timer);
+      bar.classList.remove("indet"); bar.style.opacity = ".3";
+      status.className = "job-status err";
+      status.textContent = "Cancelled";
+      action.innerHTML = "";
+      removeJobFromStorage(jobId);
+    } else if (j.playlist && (j.status === "downloading" || j.status === "processing")) {
       status.textContent = `Downloading ${j.items_done || 0}/${j.items_total || "?"} — ${(j.current || "").slice(0, 42)}`;
       speedEl.textContent = j.speed || "";
     } else if (j.status === "downloading") {
@@ -272,28 +433,86 @@ function pollJob(jobId, el) {
       status.innerHTML = `<span class="chip-done">✓ Ready</span>`;
       sizeEl.textContent = humanSize(j.size);
       speedEl.textContent = "";
+      action.innerHTML = "";
       const a = document.createElement("a");
       a.className = "btn-save"; a.href = "/api/file/" + jobId; a.setAttribute("download", "");
       a.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg> Save`;
-      action.innerHTML = ""; action.appendChild(a);
+      action.appendChild(a);
+      removeJobFromStorage(jobId);
     } else if (j.status === "error") {
       clearInterval(timer);
       bar.classList.add("indet"); bar.style.opacity = ".3";
       status.className = "job-status err";
       status.textContent = "⚠ Failed: " + (j.error || "unknown error");
+      action.innerHTML = "";
+      if (retryParams) {
+        const retryBtn = document.createElement("button");
+        retryBtn.className = "btn-cancel"; retryBtn.textContent = "↻ Retry";
+        retryBtn.onclick = async () => {
+          retryBtn.disabled = true;
+          const res = await fetch("/api/download", {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify(retryParams),
+          });
+          const data = await res.json();
+          if (!res.ok) { retryBtn.disabled = false; showError(data.detail || "Retry failed"); return; }
+          if (data.balance != null) refreshCredits(data.balance);
+          el.remove();
+          addJob(data.job_id, el.querySelector(".job-thumb").src, el.querySelector(".job-title").textContent,
+                 el.querySelector(".job-sub span").textContent, retryParams);
+        };
+        action.appendChild(retryBtn);
+      }
+      removeJobFromStorage(jobId);
     }
   }, 600);
 }
 
-$("#search").addEventListener("submit", (e) => { e.preventDefault(); const u = $("#url").value.trim(); if (u) fetchInfo(u); });
+// ---- clear completed jobs -------------------------------------------------
+function clearDoneJobs() {
+  document.querySelectorAll(".job").forEach((el) => {
+    const st = el.querySelector(".job-status");
+    if (st && (st.querySelector(".chip-done") || st.classList.contains("err"))) {
+      el.remove();
+    }
+  });
+  if (!$("#jobs").children.length) hide("#downloads");
+}
+
+// ---- keyboard shortcuts ---------------------------------------------------
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "v" && document.activeElement !== $("#url")) {
+    $("#url").focus();
+  }
+  if (e.key === "Escape") {
+    const pill = $("#paste-pill");
+    if (pill) { pill.remove(); return; }
+    if (!$("#error").classList.contains("hidden")) { hideError(); return; }
+    clearUrl();
+  }
+});
+
+// ---- event wiring ---------------------------------------------------------
+$("#search").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const u = $("#url").value.trim();
+  if (u) { setUrl(u); fetchInfo(u); }
+});
+$("#url").addEventListener("input", () => {
+  $("#url-clear").style.display = $("#url").value ? "flex" : "none";
+});
+$("#url-clear").addEventListener("click", clearUrl);
 $("#downloadBtn").addEventListener("click", startDownload);
 $("#plDownloadBtn").addEventListener("click", startPlaylist);
 $("#topupBtn").addEventListener("click", topUp);
+$("#clear-done-btn").addEventListener("click", clearDoneJobs);
 ["trimStart", "trimEnd"].forEach((id) => $("#" + id).addEventListener("input", onTrimText));
 $("#rangeStart").addEventListener("input", () => onSlide("start"));
 $("#rangeEnd").addEventListener("input", () => onSlide("end"));
 ["optSubs", "optMusic", "optSponsor"].forEach((id) => $("#" + id).addEventListener("change", updateCost));
+["plMin", "plKw"].forEach((id) => $("#" + id).addEventListener("input", updatePlaylistCost));
 document.querySelectorAll(".ex").forEach((b) => b.addEventListener("click", () => {
-  $("#url").value = b.dataset.url; fetchInfo(b.dataset.url);
+  setUrl(b.dataset.url); fetchInfo(b.dataset.url);
 }));
+
 loadSession();

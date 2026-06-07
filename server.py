@@ -32,6 +32,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from starlette.middleware.sessions import SessionMiddleware
 
 from mythos_sdk import (require_launch_token, report_usage, handshake_router,
@@ -42,10 +45,35 @@ DL_DIR = HERE / "downloads"
 DL_DIR.mkdir(exist_ok=True)
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="Pluck")
-app.add_middleware(SessionMiddleware, secret_key="pluck-mythos-demo")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET", "pluck-dev-secret-change-in-prod"))
 app.include_router(handshake_router)  # GET /.well-known/mythos-handshake (publish-time check)
 JOBS: dict[str, dict] = {}
+JOBS_LOCK = threading.Lock()
+_INFLIGHT: set[str] = set()  # dl_key values for in-progress downloads
+
+from concurrent.futures import ThreadPoolExecutor
+_POOL = ThreadPoolExecutor(max_workers=int(os.environ.get("PLUCK_MAX_WORKERS", 8)))
+JOB_TTL = int(os.environ.get("PLUCK_JOB_TTL", 86400))  # seconds before job + files are reaped
+
+
+def _reap_old_jobs():
+    """Background thread: delete jobs + files older than JOB_TTL."""
+    while True:
+        time.sleep(3600)
+        cutoff = time.time() - JOB_TTL
+        with JOBS_LOCK:
+            stale = [jid for jid, j in JOBS.items() if j.get("created_at", 0) < cutoff]
+        for jid in stale:
+            shutil.rmtree(DL_DIR / jid, ignore_errors=True)
+            with JOBS_LOCK:
+                JOBS.pop(jid, None)
+
+
+threading.Thread(target=_reap_old_jobs, daemon=True).start()
 STD_HEIGHTS = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]
 
 # ---- speed: faster downloader (if installed) + cache metadata / finished files ----
@@ -175,6 +203,7 @@ def _cache_info(url: str, data: dict) -> dict:
 
 
 @app.post("/api/info")
+@limiter.limit("30/minute")
 def api_info(req: InfoReq, request: Request):
     consumer(request)  # AUTH gate
     url = (req.url or "").strip()
@@ -324,6 +353,8 @@ def _run_job(job_id: str, req: "DownloadReq"):
             job["status"] = "processing"
 
     try:
+        if job.get("status") == "cancelled":
+            return
         with yt_dlp.YoutubeDL(build_download_opts(req, job_dir, hook)) as ydl:
             ydl.download([req.url.strip()])
         files = [p for p in job_dir.iterdir() if p.is_file() and not p.name.endswith(".part")]
@@ -345,6 +376,9 @@ def _run_job(job_id: str, req: "DownloadReq"):
             FILE_CACHE[job["_key"]] = {"filepath": str(out), "filename": out.name, "size": out.stat().st_size}
     except Exception as e:
         job.update(status="error", error=str(e).splitlines()[-1][:200])
+    finally:
+        with JOBS_LOCK:
+            _INFLIGHT.discard(job.get("_key", ""))
 
 
 def _run_playlist_job(job_id: str, req: "DownloadReq"):
@@ -404,14 +438,25 @@ async def api_download(req: DownloadReq, request: Request):
                 return False
             return True
 
-        try:
-            with yt_dlp.YoutubeDL({**_ydl_base(), "noplaylist": False, "extract_flat": "in_playlist",
-                                   "playlistend": PLAYLIST_CAP}) as ydl:
-                pinfo = ydl.extract_info(req.url.strip(), download=False)
-            entries = [e for e in (pinfo.get("entries") or []) if e][:PLAYLIST_CAP]
-            n = sum(1 for e in entries if _match(e)) if (kw or req.min_minutes) else len(entries)
-        except Exception:
-            n = PLAYLIST_CAP
+        # Use cached playlist info if available — avoid a second yt-dlp network call
+        n = PLAYLIST_CAP
+        cached_info = INFO_CACHE.get(req.url.strip())
+        if cached_info and time.time() - cached_info[0] < INFO_TTL:
+            pdata = cached_info[1]
+            entries = pdata.get("items") or []
+            if entries and (kw or req.min_minutes):
+                n = sum(1 for e in entries if _match(e)) or 1
+            elif pdata.get("count"):
+                n = min(pdata["count"], PLAYLIST_CAP)
+        else:
+            try:
+                with yt_dlp.YoutubeDL({**_ydl_base(), "noplaylist": False, "extract_flat": "in_playlist",
+                                       "playlistend": PLAYLIST_CAP}) as ydl:
+                    pinfo = ydl.extract_info(req.url.strip(), download=False)
+                entries = [e for e in (pinfo.get("entries") or []) if e][:PLAYLIST_CAP]
+                n = sum(1 for e in entries if _match(e)) if (kw or req.min_minutes) else len(entries)
+            except Exception:
+                n = PLAYLIST_CAP
         n = max(1, n)
         credits, reason = CREDITS_PER_DOWNLOAD * n, f"playlist-{n}"
         try:
@@ -419,24 +464,45 @@ async def api_download(req: DownloadReq, request: Request):
         except InsufficientFundsError:
             raise HTTPException(402, f"This batch (up to {n} videos) needs {credits} credits — top up")
         job_id = uuid.uuid4().hex[:12]
-        JOBS[job_id] = {"id": job_id, "status": "queued", "progress": 0, "playlist": True, "items_total": n}
-        threading.Thread(target=_run_playlist_job, args=(job_id, req), daemon=True).start()
+        with JOBS_LOCK:
+            JOBS[job_id] = {"id": job_id, "status": "queued", "progress": 0, "playlist": True,
+                            "items_total": n, "created_at": time.time()}
+        _POOL.submit(_run_playlist_job, job_id, req)
         return {"job_id": job_id, "charged": credits, "balance": await wallet_balance(m["userId"])}
 
     credits, reason = cost_for(req)  # single download (PAYMENT scales with options)
+    key = _dl_key(req)
+
+    # Dedup: if an identical download is already in flight, reuse the existing job
+    existing_job_id = None
+    with JOBS_LOCK:
+        if key in _INFLIGHT:
+            for j in JOBS.values():
+                if j.get("_key") == key and j.get("status") not in ("done", "error", "cancelled"):
+                    existing_job_id = j["id"]
+                    break
+
     try:
         await report_usage(m["sessionJti"], credits=credits, reason=reason)
     except InsufficientFundsError:
         raise HTTPException(402, f"This download needs {credits} credits — top up")
-    key = _dl_key(req)
+
+    if existing_job_id:
+        return {"job_id": existing_job_id, "charged": credits, "balance": await wallet_balance(m["userId"])}
+
     cached = FILE_CACHE.get(key)
     if cached and Path(cached["filepath"]).exists():  # identical request -> serve the existing file
         job_id = uuid.uuid4().hex[:12]
-        JOBS[job_id] = {"id": job_id, "status": "done", "progress": 100, "cached": True, **cached}
+        with JOBS_LOCK:
+            JOBS[job_id] = {"id": job_id, "status": "done", "progress": 100, "cached": True,
+                            "created_at": time.time(), **cached}
         return {"job_id": job_id, "charged": credits, "balance": await wallet_balance(m["userId"])}
     job_id = uuid.uuid4().hex[:12]
-    JOBS[job_id] = {"id": job_id, "status": "queued", "progress": 0, "choice": req.choice, "_key": key}
-    threading.Thread(target=_run_job, args=(job_id, req), daemon=True).start()
+    with JOBS_LOCK:
+        JOBS[job_id] = {"id": job_id, "status": "queued", "progress": 0, "choice": req.choice,
+                        "_key": key, "created_at": time.time()}
+        _INFLIGHT.add(key)
+    _POOL.submit(_run_job, job_id, req)
     return {"job_id": job_id, "charged": credits, "balance": await wallet_balance(m["userId"])}
 
 
@@ -448,6 +514,21 @@ def api_job(job_id: str):
     return {k: v for k, v in job.items() if k != "filepath" and not k.startswith("_")}
 
 
+@app.delete("/api/jobs/{job_id}")
+def api_cancel_job(job_id: str, request: Request):
+    consumer(request)
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    if job.get("status") in ("done", "error"):
+        return {"ok": True}  # already terminal, nothing to cancel
+    job["status"] = "cancelled"
+    job["error"] = "Cancelled by user"
+    with JOBS_LOCK:
+        _INFLIGHT.discard(job.get("_key", ""))
+    return {"ok": True}
+
+
 @app.get("/api/file/{job_id}")
 def api_file(job_id: str):
     job = JOBS.get(job_id)
@@ -456,14 +537,21 @@ def api_file(job_id: str):
     return FileResponse(job["filepath"], filename=job["filename"], media_type="application/octet-stream")
 
 
+_IS_DEV = os.environ.get("MYTHOS_ENV", "development") != "production"
 NOT_LAUNCHED_HTML = """<!doctype html><meta charset="utf-8"><title>Pluck</title>
-<style>body{background:#0f0f0f;color:#f1f1f1;font-family:system-ui,sans-serif;display:flex;
-min-height:100vh;align-items:center;justify-content:center;text-align:center;margin:0}
-a{display:inline-block;background:#1aa64a;color:#fff;padding:12px 22px;border-radius:24px;
-text-decoration:none;font-weight:700;margin-top:14px}.m{color:#aaa}</style>
+<style>body{{background:#0f0f0f;color:#f1f1f1;font-family:system-ui,sans-serif;display:flex;
+min-height:100vh;align-items:center;justify-content:center;text-align:center;margin:0}}
+a{{display:inline-block;background:#1aa64a;color:#fff;padding:12px 22px;border-radius:24px;
+text-decoration:none;font-weight:700;margin-top:14px}}.m{{color:#aaa}}</style>
 <div><img src="/static/pluck-logo.png" width="96" style="border-radius:20px"><h1>Pluck</h1>
 <p class="m">This app is metered through Mythos. Launch it from the Mythos platform to get a session.</p>
-<a href="{api}/">→ Go to the Mock Mythos launcher</a></div>"""
+{dev_link}</div>"""
+
+
+def _not_launched_html() -> str:
+    dev_link = f'<a href="{MYTHOS_API}/">→ Go to the Mock Mythos launcher</a>' if _IS_DEV else \
+               '<p class="m">Open this app from the Mythos marketplace.</p>'
+    return NOT_LAUNCHED_HTML.format(dev_link=dev_link)
 
 
 # ---- AUTH: exchange the single-use launch token, then keep our own session -
@@ -476,7 +564,7 @@ async def dashboard(request: Request, session: MythosSession = Depends(require_l
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     if not request.session.get("mythos"):
-        return HTMLResponse(NOT_LAUNCHED_HTML.replace("{api}", MYTHOS_API))
+        return HTMLResponse(_not_launched_html())
     return (HERE / "static" / "index.html").read_text(encoding="utf-8")
 
 
