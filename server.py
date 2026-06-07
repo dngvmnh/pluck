@@ -195,12 +195,13 @@ def build_download_opts(req: "DownloadReq", job_dir: Path, hook) -> dict:
     opts = {**_ydl_base(), "noplaylist": True,
             "outtmpl": str(job_dir / "%(title).80B.%(ext)s"), "progress_hooks": [hook]}
     pps = []
-    if req.music:                                            # ID3 tags + album art + loudness
+    if req.music:                                            # MP3 + ID3 tags + JPEG album art + loudness
         opts["format"] = "ba/b"
         opts["writethumbnail"] = True
         opts["postprocessor_args"] = {"extractaudio": ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"]}
         pps += [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"},
                 {"key": "FFmpegMetadata"},
+                {"key": "FFmpegThumbnailsConvertor", "format": "jpg"},  # PNG cover breaks many players
                 {"key": "EmbedThumbnail"}]
     else:
         fmt, fpps = format_selector(req.choice)
@@ -224,12 +225,21 @@ def _trim_if_requested(out: Path, req: "DownloadReq") -> Path:
     if s is None and e is None:
         return out
     clip = out.with_name(out.stem + "-clip" + out.suffix)
+    ext = out.suffix.lower()
     args = [FFMPEG, "-y", "-loglevel", "error"]
     if s is not None:
         args += ["-ss", str(s)]
     if e is not None:
         args += ["-to", str(e)]
-    args += ["-i", str(out), "-c", "copy", str(clip)]
+    args += ["-i", str(out)]
+    if ext == ".mp3":  # re-encode for a clean header + keep cover art as JPEG (copy-cut breaks players)
+        args += ["-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k",
+                 "-map", "0:v:0?", "-c:v", "mjpeg", "-disposition:v", "attached_pic",
+                 "-id3v2_version", "3", str(clip)]
+    elif ext in (".m4a", ".aac", ".opus", ".flac", ".ogg", ".wav"):
+        args += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "192k", str(clip)]
+    else:  # video: stream copy is fine
+        args += ["-c", "copy", str(clip)]
     try:
         r = subprocess.run(args, capture_output=True, timeout=180)
         if r.returncode == 0 and clip.exists() and clip.stat().st_size > 0:
