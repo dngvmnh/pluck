@@ -235,7 +235,18 @@ function renderSingle(d) {
   $("#durbadge").style.display = d.duration_str ? "" : "none";
   $("#title").textContent = d.title;
   $("#uploader").textContent = d.uploader || d.extractor;
-  setAvatar($("#ch-avatar"), d.uploader || d.extractor, "shapes", (d.uploader || d.extractor || "?").trim().charAt(0).toUpperCase());
+  const seed = d.uploader || d.extractor || "?";
+  const fallbackLetter = seed.trim().charAt(0).toUpperCase();
+  if (d.channel_avatar) {
+    const el = $("#ch-avatar");
+    el.textContent = fallbackLetter;
+    const img = new Image();
+    img.className = "avatar-img"; img.alt = "";
+    img.onload = () => { el.textContent = ""; el.appendChild(img); };
+    img.src = d.channel_avatar;
+  } else {
+    setAvatar($("#ch-avatar"), seed, "shapes", fallbackLetter);
+  }
   $("#meta").textContent = [d.extractor, humanCount(d.view_count), d.duration_str].filter(Boolean).join("  •  ");
   $("#result .dl-panel-head").textContent = "Choose a format";
 

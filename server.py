@@ -81,6 +81,45 @@ ARIA2C = shutil.which("aria2c")           # 16-connection downloader, used autom
 FRAG_CONCURRENCY = int(os.environ.get("PLUCK_FRAGMENTS", 8))
 INFO_TTL = 300                            # seconds to trust a cached /api/info result
 INFO_CACHE: dict[str, tuple[float, dict]] = {}
+CHANNEL_AVATAR_CACHE: dict[str, str | None] = {}  # channel_id -> avatar url, never expires
+
+
+def _get_channel_avatar(info: dict) -> str | None:
+    """Return channel/uploader avatar URL. Tries yt-dlp fields first; for YouTube,
+    fetches the channel page once per channel_id (result cached forever)."""
+    for key in ("uploader_thumbnail", "channel_thumbnail", "avatar_url", "uploader_avatar"):
+        v = info.get(key)
+        if v and isinstance(v, str) and v.startswith("http"):
+            return v
+
+    channel_id = info.get("channel_id") or info.get("uploader_id")
+    if not channel_id:
+        return None
+    if channel_id in CHANNEL_AVATAR_CACHE:
+        return CHANNEL_AVATAR_CACHE[channel_id]
+
+    channel_url = info.get("channel_url") or info.get("uploader_url")
+    if not channel_url:
+        CHANNEL_AVATAR_CACHE[channel_id] = None
+        return None
+
+    try:
+        opts = {"quiet": True, "no_warnings": True, "extract_flat": True,
+                "ffmpeg_location": FFMPEG}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ch = ydl.extract_info(channel_url, download=False)
+        thumbs = (ch or {}).get("thumbnails") or []
+        # YouTube returns avatar (small) + banner (large) in thumbnails list.
+        # Pick largest thumbnail that is square-ish and under 500 px wide (= avatar, not banner).
+        avatar_thumbs = [t for t in thumbs if (t.get("width") or 9999) <= 800
+                         and abs((t.get("width") or 1) - (t.get("height") or 1)) < 50]
+        url = (max(avatar_thumbs, key=lambda t: t.get("width") or 0).get("url")
+               if avatar_thumbs else (thumbs[0].get("url") if thumbs else None))
+        CHANNEL_AVATAR_CACHE[channel_id] = url
+        return url
+    except Exception:
+        CHANNEL_AVATAR_CACHE[channel_id] = None
+        return None
 FILE_CACHE: dict[str, dict] = {}          # url+options -> finished file, for instant re-download
 
 
@@ -220,9 +259,11 @@ def api_info(req: InfoReq, request: Request):
 
     if info.get("_type") == "playlist":
         entries = [e for e in (info.get("entries") or []) if e]
-        thumb = None
-        if entries:
-            thumb = (entries[0].get("thumbnails") or [{}])[-1].get("url")
+        # Prefer playlist-level thumbnail; fall back to first entry thumbnail
+        thumb = info.get("thumbnail")
+        if not thumb and entries:
+            thumb = ((entries[0].get("thumbnails") or [{}])[-1].get("url")
+                     or entries[0].get("thumbnail"))
         return _cache_info(url, {
             "is_playlist": True,
             "title": info.get("title") or "Playlist",
@@ -231,13 +272,16 @@ def api_info(req: InfoReq, request: Request):
             "cap": PLAYLIST_CAP,
             "webpage_url": info.get("webpage_url") or url,
             "thumbnail": thumb,
-            "items": [{"title": e.get("title") or "—", "duration_str": _fmt_duration(e.get("duration"))}
-                      for e in entries[:8]],
+            "items": [{"title": e.get("title") or f"Track {i + 1}",
+                       "duration_str": _fmt_duration(e.get("duration"))}
+                      for i, e in enumerate(entries[:8])],
         })
+    channel_avatar = _get_channel_avatar(info)
     return _cache_info(url, {
         "is_playlist": False,
         "title": info.get("title") or "Untitled",
         "uploader": info.get("uploader") or info.get("channel") or info.get("extractor_key") or "",
+        "channel_avatar": channel_avatar,
         "duration": info.get("duration"),
         "duration_str": _fmt_duration(info.get("duration")),
         "thumbnail": info.get("thumbnail"),
