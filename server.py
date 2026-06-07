@@ -6,8 +6,10 @@ circumvent DRM, logins/paywalls, geoblocks, age-gates, or anti-bot.
 """
 import os
 import re
+import shutil
 import subprocess
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -46,6 +48,13 @@ app.include_router(handshake_router)  # GET /.well-known/mythos-handshake (publi
 JOBS: dict[str, dict] = {}
 STD_HEIGHTS = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]
 
+# ---- speed: faster downloader (if installed) + cache metadata / finished files ----
+ARIA2C = shutil.which("aria2c")           # 16-connection downloader, used automatically if present
+FRAG_CONCURRENCY = int(os.environ.get("PLUCK_FRAGMENTS", 8))
+INFO_TTL = 300                            # seconds to trust a cached /api/info result
+INFO_CACHE: dict[str, tuple[float, dict]] = {}
+FILE_CACHE: dict[str, dict] = {}          # url+options -> finished file, for instant re-download
+
 
 # ---- Mythos auth helpers (the AUTH gate) ----------------------------------
 def consumer(request: Request) -> dict:
@@ -73,8 +82,13 @@ def _fmt_duration(secs) -> str:
 
 
 def _ydl_base() -> dict:
-    return {"quiet": True, "no_warnings": True, "noplaylist": True,
-            "ffmpeg_location": FFMPEG, "concurrent_fragment_downloads": 8}  # multi-threaded
+    base = {"quiet": True, "no_warnings": True, "noplaylist": True, "ffmpeg_location": FFMPEG,
+            "concurrent_fragment_downloads": FRAG_CONCURRENCY,  # parallel DASH/HLS fragments
+            "http_chunk_size": 10 * 1024 * 1024}                # sidesteps per-connection throttling
+    if ARIA2C:                                                  # multi-connection downloader if installed
+        base["external_downloader"] = "aria2c"
+        base["external_downloader_args"] = {"aria2c": ["-x16", "-s16", "-k1M", "--max-tries=5"]}
+    return base
 
 
 def build_qualities(info: dict) -> list[dict]:
@@ -149,12 +163,26 @@ def cost_for(req: "DownloadReq") -> tuple[int, str]:
     return credits, "+".join(reasons)
 
 
+def _dl_key(req: "DownloadReq") -> str:
+    """Stable cache key for a single download — same url+options means the same file."""
+    return "|".join(str(x) for x in (req.url.strip(), req.choice, req.music, req.subs,
+                                     req.sponsorblock, parse_hms(req.start), parse_hms(req.end)))
+
+
+def _cache_info(url: str, data: dict) -> dict:
+    INFO_CACHE[url] = (time.time(), data)
+    return data
+
+
 @app.post("/api/info")
 def api_info(req: InfoReq, request: Request):
     consumer(request)  # AUTH gate
     url = (req.url or "").strip()
     if not url:
         raise HTTPException(400, "Paste a video URL.")
+    cached = INFO_CACHE.get(url)                      # instant repeat lookups
+    if cached and time.time() - cached[0] < INFO_TTL:
+        return cached[1]
     try:
         with yt_dlp.YoutubeDL({**_ydl_base(), "noplaylist": False, "extract_flat": "in_playlist"}) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -166,7 +194,7 @@ def api_info(req: InfoReq, request: Request):
         thumb = None
         if entries:
             thumb = (entries[0].get("thumbnails") or [{}])[-1].get("url")
-        return {
+        return _cache_info(url, {
             "is_playlist": True,
             "title": info.get("title") or "Playlist",
             "uploader": info.get("uploader") or info.get("channel") or "",
@@ -176,8 +204,8 @@ def api_info(req: InfoReq, request: Request):
             "thumbnail": thumb,
             "items": [{"title": e.get("title") or "—", "duration_str": _fmt_duration(e.get("duration"))}
                       for e in entries[:8]],
-        }
-    return {
+        })
+    return _cache_info(url, {
         "is_playlist": False,
         "title": info.get("title") or "Untitled",
         "uploader": info.get("uploader") or info.get("channel") or info.get("extractor_key") or "",
@@ -188,7 +216,7 @@ def api_info(req: InfoReq, request: Request):
         "extractor": info.get("extractor_key") or info.get("extractor") or "",
         "view_count": info.get("view_count"),
         "qualities": build_qualities(info),
-    }
+    })
 
 
 def build_download_opts(req: "DownloadReq", job_dir: Path, hook) -> dict:
@@ -209,7 +237,7 @@ def build_download_opts(req: "DownloadReq", job_dir: Path, hook) -> dict:
         if fpps:
             pps += fpps
         if req.subs:                                         # subtitles -> srt -> embedded
-            opts.update(writesubtitles=True, writeautomaticsub=True, subtitleslangs=["en.*", "en"])
+            opts.update(writesubtitles=True, writeautomaticsub=True, subtitleslangs=["en", "en-US", "en-GB"])
             pps += [{"key": "FFmpegSubtitlesConvertor", "format": "srt"}, {"key": "FFmpegEmbedSubtitle"}]
     if req.sponsorblock:                                     # cut sponsor/intro/outro
         opts["sponsorblock_remove"] = ["sponsor", "intro", "outro", "selfpromo", "interaction", "preview"]
@@ -253,6 +281,32 @@ def _trim_if_requested(out: Path, req: "DownloadReq") -> Path:
     return out
 
 
+def _fetch_subs(url: str, job_dir: Path) -> list[Path]:
+    """Best-effort English .srt sidecars for music mode. Separate pass so a subtitle
+    429/rate-limit never aborts the audio download. Exact langs avoid pulling
+    auto-translated tracks (en-de, en-fr, ...) that trigger HTTP 429."""
+    opts = {**_ydl_base(), "skip_download": True, "writesubtitles": True, "writeautomaticsub": True,
+            "subtitleslangs": ["en", "en-US", "en-GB"], "ignoreerrors": True,
+            "outtmpl": str(job_dir / "%(title).60B.%(ext)s")}
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+    except Exception:
+        pass
+    srts = []
+    for vtt in sorted(job_dir.glob("*.vtt")):  # YouTube serves vtt; convert locally (PP skips on skip_download)
+        srt = vtt.with_suffix(".srt")
+        try:
+            r = subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-i", str(vtt), str(srt)],
+                               capture_output=True, timeout=60)
+            if r.returncode == 0 and srt.exists():
+                vtt.unlink(missing_ok=True)
+                srts.append(srt)
+        except Exception:
+            pass
+    return srts
+
+
 def _run_job(job_id: str, req: "DownloadReq"):
     job = JOBS[job_id]
     job_dir = DL_DIR / job_id
@@ -277,7 +331,18 @@ def _run_job(job_id: str, req: "DownloadReq"):
             raise RuntimeError("no output file produced")
         out = max(files, key=lambda p: p.stat().st_size)
         out = _trim_if_requested(out, req)
+        if req.music and req.subs:  # mp3 can't carry subtitles — ship the .srt sidecar(s) in a zip
+            srts = _fetch_subs(req.url.strip(), job_dir)
+            if srts:
+                zip_path = job_dir / (out.stem + ".zip")
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as z:
+                    z.write(out, out.name)
+                    for s in srts:
+                        z.write(s, s.name)
+                out = zip_path
         job.update(status="done", progress=100, filename=out.name, filepath=str(out), size=out.stat().st_size)
+        if job.get("_key"):  # remember this result so an identical request returns instantly
+            FILE_CACHE[job["_key"]] = {"filepath": str(out), "filename": out.name, "size": out.stat().st_size}
     except Exception as e:
         job.update(status="error", error=str(e).splitlines()[-1][:200])
 
@@ -363,8 +428,14 @@ async def api_download(req: DownloadReq, request: Request):
         await report_usage(m["sessionJti"], credits=credits, reason=reason)
     except InsufficientFundsError:
         raise HTTPException(402, f"This download needs {credits} credits — top up")
+    key = _dl_key(req)
+    cached = FILE_CACHE.get(key)
+    if cached and Path(cached["filepath"]).exists():  # identical request -> serve the existing file
+        job_id = uuid.uuid4().hex[:12]
+        JOBS[job_id] = {"id": job_id, "status": "done", "progress": 100, "cached": True, **cached}
+        return {"job_id": job_id, "charged": credits, "balance": await wallet_balance(m["userId"])}
     job_id = uuid.uuid4().hex[:12]
-    JOBS[job_id] = {"id": job_id, "status": "queued", "progress": 0, "choice": req.choice}
+    JOBS[job_id] = {"id": job_id, "status": "queued", "progress": 0, "choice": req.choice, "_key": key}
     threading.Thread(target=_run_job, args=(job_id, req), daemon=True).start()
     return {"job_id": job_id, "charged": credits, "balance": await wallet_balance(m["userId"])}
 
@@ -374,7 +445,7 @@ def api_job(job_id: str):
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "unknown job")
-    return {k: v for k, v in job.items() if k != "filepath"}
+    return {k: v for k, v in job.items() if k != "filepath" and not k.startswith("_")}
 
 
 @app.get("/api/file/{job_id}")
@@ -412,8 +483,8 @@ def index(request: Request):
 @app.get("/api/session")
 async def api_session(request: Request):
     m = consumer(request)
-    return {"user": m["displayName"], "balance": await wallet_balance(m["userId"]),
-            "cost": CREDITS_PER_DOWNLOAD}
+    return {"user": m["displayName"], "email": m.get("email"),
+            "balance": await wallet_balance(m["userId"]), "cost": CREDITS_PER_DOWNLOAD}
 
 
 @app.post("/api/topup")
