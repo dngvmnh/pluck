@@ -1,12 +1,15 @@
-"""Pluck — a YouTube-styled front-end over yt-dlp.
+"""Pluck — a YouTube-styled front-end over yt-dlp, metered through Mythos.
 
 Backend: FastAPI. Fetches metadata and downloads content you're authorized to grab
 (your own uploads, public / Creative-Commons, platform-permitted). It does NOT
-circumvent DRM, logins/paywalls, or anti-bot — yt-dlp doesn't either.
+circumvent DRM, logins/paywalls, geoblocks, age-gates, or anti-bot.
 """
 import os
+import re
+import subprocess
 import threading
 import uuid
+import zipfile
 from pathlib import Path
 
 # Make the bundled ffmpeg + deno (JS runtime for full YouTube extraction) discoverable.
@@ -17,6 +20,7 @@ os.environ.setdefault("MYTHOS_API_URL", "http://localhost:4000")
 os.environ.setdefault("MYTHOS_LISTING_ID", "11111111-1111-1111-1111-111111111111")
 MYTHOS_API = os.environ["MYTHOS_API_URL"]
 CREDITS_PER_DOWNLOAD = int(os.environ.get("CREDITS_PER_DOWNLOAD", 2))
+PLAYLIST_CAP = int(os.environ.get("PLAYLIST_CAP", 10))
 
 import httpx
 import imageio_ffmpeg
@@ -40,7 +44,7 @@ app = FastAPI(title="Pluck")
 app.add_middleware(SessionMiddleware, secret_key="pluck-mythos-demo")
 app.include_router(handshake_router)  # GET /.well-known/mythos-handshake (publish-time check)
 JOBS: dict[str, dict] = {}
-STD_HEIGHTS = [144, 240, 360, 480, 720, 1080, 1440, 2160]
+STD_HEIGHTS = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]
 
 
 # ---- Mythos auth helpers (the AUTH gate) ----------------------------------
@@ -69,7 +73,8 @@ def _fmt_duration(secs) -> str:
 
 
 def _ydl_base() -> dict:
-    return {"quiet": True, "no_warnings": True, "noplaylist": True, "ffmpeg_location": FFMPEG}
+    return {"quiet": True, "no_warnings": True, "noplaylist": True,
+            "ffmpeg_location": FFMPEG, "concurrent_fragment_downloads": 8}  # multi-threaded
 
 
 def build_qualities(info: dict) -> list[dict]:
@@ -77,7 +82,7 @@ def build_qualities(info: dict) -> list[dict]:
     maxh = max(heights) if heights else 0
     qs = [{"id": "best", "label": "Best available", "sub": "video + audio", "kind": "video"}]
     for h in sorted((h for h in STD_HEIGHTS if h <= maxh), reverse=True):
-        tag = "4K" if h == 2160 else "1440p" if h == 1440 else f"{h}p"
+        tag = "8K" if h == 4320 else "4K" if h == 2160 else "1440p" if h == 1440 else f"{h}p"
         qs.append({"id": str(h), "label": tag, "sub": "mp4", "kind": "video"})
     qs.append({"id": "audio-m4a", "label": "Audio only", "sub": "m4a", "kind": "audio"})
     qs.append({"id": "audio-mp3", "label": "Audio only", "sub": "mp3", "kind": "audio"})
@@ -85,7 +90,6 @@ def build_qualities(info: dict) -> list[dict]:
 
 
 def format_selector(choice: str):
-    """Return (format_string, postprocessors) for a quality choice."""
     if choice == "best":
         return "bv*+ba/b", None
     if choice == "audio-m4a":
@@ -96,6 +100,20 @@ def format_selector(choice: str):
     return f"bv*[height<={h}]+ba/b[height<={h}]/b", None
 
 
+def parse_hms(s):
+    """'90' / '1:30' / '01:02:03' -> seconds (float), or None."""
+    if not s:
+        return None
+    try:
+        nums = [float(p) for p in str(s).strip().split(":")]
+    except ValueError:
+        return None
+    sec = 0.0
+    for n in nums:
+        sec = sec * 60 + n
+    return sec
+
+
 class InfoReq(BaseModel):
     url: str
 
@@ -103,6 +121,32 @@ class InfoReq(BaseModel):
 class DownloadReq(BaseModel):
     url: str
     choice: str = "best"
+    start: str | None = None        # trim
+    end: str | None = None
+    subs: bool = False              # download + embed subtitles
+    music: bool = False             # audio + ID3 tags + album art + loudness normalize
+    sponsorblock: bool = False      # cut sponsor/intro/outro segments
+    playlist: bool = False          # bulk download a playlist/channel
+    min_minutes: float | None = None  # smart filter: only videos longer than N minutes
+    keyword: str | None = None        # smart filter: title contains keyword
+
+
+def cost_for(req: "DownloadReq") -> tuple[int, str]:
+    """Credits + reason for a single download, from the chosen premium options."""
+    credits, reasons = CREDITS_PER_DOWNLOAD, ["download"]
+    if parse_hms(req.start) is not None or parse_hms(req.end) is not None:
+        credits += 1; reasons.append("trim")
+    if req.choice == "2160":
+        credits += 2; reasons.append("4k")
+    elif req.choice == "4320":
+        credits += 4; reasons.append("8k")
+    if req.subs:
+        credits += 1; reasons.append("subtitles")
+    if req.music:
+        credits += 1; reasons.append("music")
+    if req.sponsorblock:
+        credits += 1; reasons.append("sponsorblock")
+    return credits, "+".join(reasons)
 
 
 @app.post("/api/info")
@@ -112,13 +156,29 @@ def api_info(req: InfoReq, request: Request):
     if not url:
         raise HTTPException(400, "Paste a video URL.")
     try:
-        with yt_dlp.YoutubeDL(_ydl_base()) as ydl:
+        with yt_dlp.YoutubeDL({**_ydl_base(), "noplaylist": False, "extract_flat": "in_playlist"}) as ydl:
             info = ydl.extract_info(url, download=False)
-        if info.get("_type") == "playlist" and info.get("entries"):
-            info = info["entries"][0]
     except Exception as e:
         raise HTTPException(422, f"Couldn't read that link: {str(e).splitlines()[-1][:200]}")
+
+    if info.get("_type") == "playlist":
+        entries = [e for e in (info.get("entries") or []) if e]
+        thumb = None
+        if entries:
+            thumb = (entries[0].get("thumbnails") or [{}])[-1].get("url")
+        return {
+            "is_playlist": True,
+            "title": info.get("title") or "Playlist",
+            "uploader": info.get("uploader") or info.get("channel") or "",
+            "count": info.get("playlist_count") or len(entries),
+            "cap": PLAYLIST_CAP,
+            "webpage_url": info.get("webpage_url") or url,
+            "thumbnail": thumb,
+            "items": [{"title": e.get("title") or "—", "duration_str": _fmt_duration(e.get("duration"))}
+                      for e in entries[:8]],
+        }
     return {
+        "is_playlist": False,
         "title": info.get("title") or "Untitled",
         "uploader": info.get("uploader") or info.get("channel") or info.get("extractor_key") or "",
         "duration": info.get("duration"),
@@ -131,9 +191,57 @@ def api_info(req: InfoReq, request: Request):
     }
 
 
-def _run_job(job_id: str, url: str, choice: str):
+def build_download_opts(req: "DownloadReq", job_dir: Path, hook) -> dict:
+    opts = {**_ydl_base(), "noplaylist": True,
+            "outtmpl": str(job_dir / "%(title).80B.%(ext)s"), "progress_hooks": [hook]}
+    pps = []
+    if req.music:                                            # ID3 tags + album art + loudness
+        opts["format"] = "ba/b"
+        opts["writethumbnail"] = True
+        opts["postprocessor_args"] = {"extractaudio": ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"]}
+        pps += [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"},
+                {"key": "FFmpegMetadata"},
+                {"key": "EmbedThumbnail"}]
+    else:
+        fmt, fpps = format_selector(req.choice)
+        opts["format"] = fmt
+        if fpps:
+            pps += fpps
+        if req.subs:                                         # subtitles -> srt -> embedded
+            opts.update(writesubtitles=True, writeautomaticsub=True, subtitleslangs=["en.*", "en"])
+            pps += [{"key": "FFmpegSubtitlesConvertor", "format": "srt"}, {"key": "FFmpegEmbedSubtitle"}]
+    if req.sponsorblock:                                     # cut sponsor/intro/outro
+        opts["sponsorblock_remove"] = ["sponsor", "intro", "outro", "selfpromo", "interaction", "preview"]
+    if pps:
+        opts["postprocessors"] = pps
+    return opts
+
+
+def _trim_if_requested(out: Path, req: "DownloadReq") -> Path:
+    """Trim start–end locally (stream copy). yt-dlp's network range-download segfaults
+    with the bundled static ffmpeg, so we download then cut — reliable, costs bandwidth."""
+    s, e = parse_hms(req.start), parse_hms(req.end)
+    if s is None and e is None:
+        return out
+    clip = out.with_name(out.stem + "-clip" + out.suffix)
+    args = [FFMPEG, "-y", "-loglevel", "error"]
+    if s is not None:
+        args += ["-ss", str(s)]
+    if e is not None:
+        args += ["-to", str(e)]
+    args += ["-i", str(out), "-c", "copy", str(clip)]
+    try:
+        r = subprocess.run(args, capture_output=True, timeout=180)
+        if r.returncode == 0 and clip.exists() and clip.stat().st_size > 0:
+            out.unlink(missing_ok=True)
+            return clip
+    except Exception:
+        pass
+    return out
+
+
+def _run_job(job_id: str, req: "DownloadReq"):
     job = JOBS[job_id]
-    fmt, pps = format_selector(choice)
     job_dir = DL_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -143,27 +251,63 @@ def _run_job(job_id: str, url: str, choice: str):
             done = d.get("downloaded_bytes") or 0
             job.update(status="downloading",
                        progress=round(done / total * 100, 1) if total else None,
-                       speed=d.get("_speed_str", "").strip(),
-                       eta=d.get("_eta_str", "").strip(),
+                       speed=d.get("_speed_str", "").strip(), eta=d.get("_eta_str", "").strip(),
                        total_bytes=total)
         elif d["status"] == "finished":
-            job["status"] = "processing"  # merge / post-process
+            job["status"] = "processing"
 
-    opts = {**_ydl_base(),
-            "format": fmt,
-            "outtmpl": str(job_dir / "%(title).80B.%(ext)s"),
-            "progress_hooks": [hook]}
-    if pps:
-        opts["postprocessors"] = pps
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
+        with yt_dlp.YoutubeDL(build_download_opts(req, job_dir, hook)) as ydl:
+            ydl.download([req.url.strip()])
         files = [p for p in job_dir.iterdir() if p.is_file() and not p.name.endswith(".part")]
         if not files:
             raise RuntimeError("no output file produced")
         out = max(files, key=lambda p: p.stat().st_size)
-        job.update(status="done", progress=100, filename=out.name,
-                   filepath=str(out), size=out.stat().st_size)
+        out = _trim_if_requested(out, req)
+        job.update(status="done", progress=100, filename=out.name, filepath=str(out), size=out.stat().st_size)
+    except Exception as e:
+        job.update(status="error", error=str(e).splitlines()[-1][:200])
+
+
+def _run_playlist_job(job_id: str, req: "DownloadReq"):
+    job = JOBS[job_id]
+    job_dir = DL_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    done = {"n": 0}
+
+    def hook(d):
+        if d["status"] == "downloading":
+            job.update(status="downloading", speed=d.get("_speed_str", "").strip(),
+                       current=((d.get("info_dict") or {}).get("title") or "")[:70], items_done=done["n"])
+        elif d["status"] == "finished":
+            done["n"] += 1
+            job.update(items_done=done["n"], status="processing")
+
+    opts = {**_ydl_base(), "noplaylist": False, "ignoreerrors": True, "playlistend": PLAYLIST_CAP,
+            "outtmpl": str(job_dir / "%(playlist_index)03d-%(title).60B.%(ext)s"),
+            "format": "bv*[height<=720]+ba/b[height<=720]/b", "progress_hooks": [hook]}
+    mf = []
+    if req.min_minutes:
+        mf.append(f"duration > {float(req.min_minutes) * 60}")
+    if req.keyword:
+        mf.append(f"title ~= '(?i){re.escape(req.keyword)}'")
+    if mf:
+        from yt_dlp.utils import match_filter_func
+        opts["match_filter"] = match_filter_func(" & ".join(mf))
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([req.url.strip()])
+        media = [p for p in job_dir.iterdir()
+                 if p.is_file() and not p.name.endswith((".part", ".zip"))]
+        if not media:
+            raise RuntimeError("no videos matched / downloaded")
+        zip_path = job_dir / "playlist.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as z:
+            for p in sorted(media):
+                z.write(p, p.name)
+        job.update(status="done", progress=100, items_done=len(media),
+                   filename=f"{(req.keyword or 'playlist')}-{len(media)}-videos.zip",
+                   filepath=str(zip_path), size=zip_path.stat().st_size)
     except Exception as e:
         job.update(status="error", error=str(e).splitlines()[-1][:200])
 
@@ -171,16 +315,45 @@ def _run_job(job_id: str, url: str, choice: str):
 @app.post("/api/download")
 async def api_download(req: DownloadReq, request: Request):
     m = consumer(request)  # AUTH gate
-    # PAYMENT: debit the Consumer's Mythos wallet for this download.
+
+    if req.playlist:  # bulk: charge per video that passes the filter (capped)
+        kw = (req.keyword or "").lower()
+
+        def _match(e):
+            if req.min_minutes and (e.get("duration") or 0) <= float(req.min_minutes) * 60:
+                return False
+            if kw and kw not in (e.get("title") or "").lower():
+                return False
+            return True
+
+        try:
+            with yt_dlp.YoutubeDL({**_ydl_base(), "noplaylist": False, "extract_flat": "in_playlist",
+                                   "playlistend": PLAYLIST_CAP}) as ydl:
+                pinfo = ydl.extract_info(req.url.strip(), download=False)
+            entries = [e for e in (pinfo.get("entries") or []) if e][:PLAYLIST_CAP]
+            n = sum(1 for e in entries if _match(e)) if (kw or req.min_minutes) else len(entries)
+        except Exception:
+            n = PLAYLIST_CAP
+        n = max(1, n)
+        credits, reason = CREDITS_PER_DOWNLOAD * n, f"playlist-{n}"
+        try:
+            await report_usage(m["sessionJti"], credits=credits, reason=reason)
+        except InsufficientFundsError:
+            raise HTTPException(402, f"This batch (up to {n} videos) needs {credits} credits — top up")
+        job_id = uuid.uuid4().hex[:12]
+        JOBS[job_id] = {"id": job_id, "status": "queued", "progress": 0, "playlist": True, "items_total": n}
+        threading.Thread(target=_run_playlist_job, args=(job_id, req), daemon=True).start()
+        return {"job_id": job_id, "charged": credits, "balance": await wallet_balance(m["userId"])}
+
+    credits, reason = cost_for(req)  # single download (PAYMENT scales with options)
     try:
-        await report_usage(m["sessionJti"], credits=CREDITS_PER_DOWNLOAD, reason="video-download")
+        await report_usage(m["sessionJti"], credits=credits, reason=reason)
     except InsufficientFundsError:
-        raise HTTPException(402, "Out of Mythos credits — top up to keep downloading")
+        raise HTTPException(402, f"This download needs {credits} credits — top up")
     job_id = uuid.uuid4().hex[:12]
-    JOBS[job_id] = {"id": job_id, "status": "queued", "progress": 0,
-                    "choice": req.choice, "url": req.url}
-    threading.Thread(target=_run_job, args=(job_id, req.url.strip(), req.choice), daemon=True).start()
-    return {"job_id": job_id, "balance": await wallet_balance(m["userId"])}
+    JOBS[job_id] = {"id": job_id, "status": "queued", "progress": 0, "choice": req.choice}
+    threading.Thread(target=_run_job, args=(job_id, req), daemon=True).start()
+    return {"job_id": job_id, "charged": credits, "balance": await wallet_balance(m["userId"])}
 
 
 @app.get("/api/jobs/{job_id}")

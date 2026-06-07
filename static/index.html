@@ -67,9 +67,38 @@
     <div class="dl-panel">
       <div class="dl-panel-head">Choose a format</div>
       <div id="qualities" class="qualities"></div>
+      <details class="adv" id="adv"><summary>Advanced ▾</summary>
+        <div class="adv-body">
+          <div class="adv-row"><span class="adv-label">✂ Trim</span>
+            <input id="trimStart" class="adv-in" placeholder="start  1:30" autocomplete="off">
+            <span class="dim">–</span>
+            <input id="trimEnd" class="adv-in" placeholder="end  2:15" autocomplete="off"></div>
+          <label class="adv-toggle"><input type="checkbox" id="optSubs"> 📝 Subtitles (.srt, embedded) <span class="cpill">+1</span></label>
+          <label class="adv-toggle"><input type="checkbox" id="optMusic"> 🎵 Music mode — MP3 + ID3 tags + album art <span class="cpill">+1</span></label>
+          <label class="adv-toggle"><input type="checkbox" id="optSponsor"> ⏭ Remove sponsor / intro / outro (SponsorBlock) <span class="cpill">+1</span></label>
+        </div>
+      </details>
       <button id="downloadBtn" class="btn-dl">
         <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>
-        Download
+        Download <span id="dlcost"></span>
+      </button>
+    </div>
+  </section>
+
+  <!-- playlist (bulk) -->
+  <section id="playlist" class="hidden result">
+    <div class="thumb-wrap"><img id="pl-thumb" class="thumb" alt=""><span id="pl-count" class="dur-badge"></span></div>
+    <h2 id="pl-title" class="vid-title"></h2>
+    <div id="pl-by" class="muted small" style="margin-bottom:10px"></div>
+    <div id="pl-items"></div>
+    <div class="dl-panel">
+      <div class="dl-panel-head">Bulk download — filter, then grab the batch</div>
+      <div class="adv-row"><span class="adv-label">Filter</span>
+        <input id="plMin" class="adv-in" placeholder="min minutes" autocomplete="off">
+        <input id="plKw" class="adv-in" placeholder="title contains…" autocomplete="off"></div>
+      <button id="plDownloadBtn" class="btn-dl">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>
+        Download batch <span id="plcost"></span>
       </button>
     </div>
   </section>

@@ -102,3 +102,23 @@ a{color:inherit;text-decoration:none}
   border-radius:20px;padding:9px 16px;font:inherit;font-weight:600;font-size:13px;cursor:pointer;white-space:nowrap}
 .btn-save:hover{background:var(--red-h)}
 .chip-done{color:#7ee07e;font-size:13px;font-weight:600}
+
+/* advanced options + playlist */
+.adv{margin:6px 0 14px;border-top:1px solid var(--line);padding-top:10px}
+.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight:600;list-style:none;user-select:none}
+.adv summary::-webkit-details-marker{display:none}
+.adv[open] summary{color:var(--ink)}
+.adv-body{display:flex;flex-direction:column;gap:10px;padding:12px 2px 2px}
+.adv-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.adv-label{font-size:13px;color:var(--muted);min-width:54px}
+.adv-in{flex:1;min-width:120px;background:var(--elev2);border:1px solid var(--line);color:var(--ink);
+  border-radius:9px;padding:8px 11px;font:inherit;font-size:13px;outline:none}
+.adv-in:focus{border-color:#1aa64a}
+.adv-toggle{display:flex;align-items:center;gap:9px;font-size:14px;color:#ddd;cursor:pointer}
+.adv-toggle input{width:16px;height:16px;accent-color:#1aa64a;cursor:pointer}
+.cpill{margin-left:auto;font-size:11px;font-weight:700;color:#7ee9cf;background:#0c1f1a;
+  border:1px solid #1c5a4a;border-radius:20px;padding:1px 8px}
+#dlcost,#plcost{font-weight:700;opacity:.9}
+.pl-item{display:flex;justify-content:space-between;gap:10px;font-size:13px;color:#cfcfcf;
+  padding:7px 2px;border-bottom:1px solid var(--line)}
+.pl-item .d{color:var(--muted)}

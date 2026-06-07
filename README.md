@@ -43,6 +43,24 @@ circumventing DRM specifically runs into DMCA §1201). DRM-protected / paywalled
 - **Full YouTube formats** use a JS runtime (`deno`, installed to `~/.deno`).
 - Progress is polled from `GET /api/jobs/{id}`; the finished file is served by `GET /api/file/{id}`.
 
+## Premium features (metered via Mythos)
+Each premium option adds Mythos credits (insufficient → 402 → Top up), exposed via the **Advanced ▾**
+panel + a **playlist** view with a live credit cost. Full tiered plan: [`docs/roadmap.md`](./docs/roadmap.md).
+
+| Feature | What it does | + credits |
+|---|---|---|
+| Trim | download just `start–end` (a clip) | +1 |
+| 4K / 8K | guaranteed hi-res multiplexing | +2 / +4 |
+| Subtitles | `.srt` written + embedded | +1 |
+| Music mode | MP3 + ID3 tags + album art + loudness | +1 |
+| SponsorBlock | cut sponsor / intro / outro segments | +1 |
+| Bulk playlist + filter | playlist/channel → filter (min-mins / keyword) → `.zip` | 2 / video |
+| Multi-threaded speed | parallel fragments | free |
+
+| Advanced options | Bulk playlist + filter |
+|---|---|
+| ![adv](./screenshots/pluck-adv-options.png) | ![playlist](./screenshots/pluck-playlist.png) |
+
 ## Run
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
@@ -56,7 +74,7 @@ python server.py            # http://localhost:8000
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /api/info {url}` | metadata + available qualities |
-| `POST /api/download {url, choice}` | start a download job → `{job_id}` |
+| `POST /api/download {url, choice, start, end, subs, music, sponsorblock, playlist, min_minutes, keyword}` | start a single or playlist job → `{job_id, charged}` |
 | `GET /api/jobs/{id}` | job status / progress / speed / filename |
 | `GET /api/file/{id}` | download the finished file |
 
