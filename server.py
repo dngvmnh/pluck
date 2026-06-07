@@ -226,20 +226,23 @@ def _trim_if_requested(out: Path, req: "DownloadReq") -> Path:
         return out
     clip = out.with_name(out.stem + "-clip" + out.suffix)
     ext = out.suffix.lower()
-    args = [FFMPEG, "-y", "-loglevel", "error"]
+    seek = []
     if s is not None:
-        args += ["-ss", str(s)]
+        seek += ["-ss", str(s)]
     if e is not None:
-        args += ["-to", str(e)]
-    args += ["-i", str(out)]
-    if ext == ".mp3":  # re-encode for a clean header + keep cover art as JPEG (copy-cut breaks players)
-        args += ["-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k",
-                 "-map", "0:v:0?", "-c:v", "mjpeg", "-disposition:v", "attached_pic",
-                 "-id3v2_version", "3", str(clip)]
+        seek += ["-to", str(e)]
+    base = [FFMPEG, "-y", "-loglevel", "error"]
+    if ext == ".mp3":
+        # input 0 (seeked) = trimmed audio; input 1 (full) = cover frame — seeking past t=0
+        # drops the attached-pic art, so take it from a second, un-seeked input.
+        args = base + seek + ["-i", str(out), "-i", str(out),
+                              "-map", "0:a:0", "-c:a", "libmp3lame", "-b:a", "192k",
+                              "-map", "1:v:0?", "-c:v", "mjpeg", "-disposition:v", "attached_pic",
+                              "-id3v2_version", "3", str(clip)]
     elif ext in (".m4a", ".aac", ".opus", ".flac", ".ogg", ".wav"):
-        args += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "192k", str(clip)]
+        args = base + seek + ["-i", str(out), "-map", "0:a:0", "-c:a", "aac", "-b:a", "192k", str(clip)]
     else:  # video: stream copy is fine
-        args += ["-c", "copy", str(clip)]
+        args = base + seek + ["-i", str(out), "-c", "copy", str(clip)]
     try:
         r = subprocess.run(args, capture_output=True, timeout=180)
         if r.returncode == 0 and clip.exists() and clip.stat().st_size > 0:
