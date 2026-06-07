@@ -61,13 +61,79 @@ panel + a **playlist** view with a live credit cost. Full tiered plan: [`docs/ro
 |---|---|
 | ![adv](./screenshots/pluck-adv-options.png) | ![playlist](./screenshots/pluck-playlist.png) |
 
-## Run
+## Run (standalone — no Mythos)
 ```bash
-python3 -m venv .venv && . .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 # one-time, for full YouTube format extraction:
 curl -fsSL https://deno.land/install.sh | sh -s -- -y
-python server.py            # http://localhost:8000
+python -m uvicorn server:app --host 127.0.0.1 --port 8000 --reload
+```
+Open `http://localhost:8000`. Without Mythos running, the auth gate is unenforced — useful for
+rapid UI iteration. For the full auth + payment flow, use the Mythos mock below.
+
+## Local development with Mythos mock (full auth + payment)
+
+Pluck's auth and payment only activate when a mock Mythos backend issues the launch token.
+Run both services, then **enter via Mythos** — not by opening Pluck directly.
+
+**Terminal 1 — mock Mythos (port 4000)**
+```bash
+cd Mythos/mythos-sdk-demo/mock-mythos-backend
+npm install            # first time only
+node server.mjs
+# → Mock Mythos listening on http://localhost:4000
+```
+
+**Terminal 2 — Pluck (port 8000)**
+```bash
+cd pluck
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e vendor/packages/python   # vendored Mythos Python SDK (not on PyPI yet)
+python -m uvicorn server:app --host 127.0.0.1 --port 8000 --reload
+```
+
+**Browser — enter via Mythos**
+```
+http://localhost:4000/open/pluck
+```
+Mythos mints a single-use RS256 launch token and redirects to
+`http://localhost:8000/dashboard?lt=<jwt>`. You land on the Pluck dashboard as
+**Linus Pauling** (`linus@consumer.example`) with **10 credits**.
+
+> Opening `localhost:8000` directly (no `?lt=`) shows "Launch from Mythos" and all API calls
+> return **401** — the auth gate is working correctly.
+
+### Verify auth & payment
+| Check | Expected |
+|---|---|
+| `GET /api/session` before launch | 401 |
+| After `localhost:4000/open/pluck` | `{"user":"Linus Pauling","balance":10,...}` |
+| Re-use same `?lt=` token | 401 — single-use (`/consume` 409 on replay) |
+| Tampered / expired token | 401 |
+| Download (2 cr base) | balance decrements, mock logs `meter … -2` |
+| Trim + music + subs (5 cr extra) | 402 once balance exhausted |
+| Click **Top up +10** | balance restored |
+
+### Fault injection (mock-backend test endpoints)
+```bash
+# Rotate JWKS signing keys — SDK must re-fetch and still verify
+curl -X POST http://localhost:4000/__keys/add
+
+# Mint a custom token (expired, wrong aud, etc.) — Pluck must reject it
+curl -X POST http://localhost:4000/__mint \
+  -H "Content-Type: application/json" \
+  -d '{"sub":"user-pluck-001","expOffsetSec":-1}'
+# paste the returned token as ?lt=<token> → expect 401
+
+# Top up wallet directly
+curl -X POST http://localhost:4000/api/wallet/topup \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"user-pluck-001","amount":20}'
+
+# Check wallet balance
+curl http://localhost:4000/api/wallet/user-pluck-001
 ```
 
 ## API
