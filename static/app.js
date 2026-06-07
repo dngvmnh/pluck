@@ -20,12 +20,34 @@ function humanSize(b) {
   return Math.round(b / 1e3) + " KB";
 }
 
+// ---- time helpers + real avatars ------------------------------------------
+function fmtClock(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+function parseClock(str) {          // "90" / "1:30" / "1:02:03" -> seconds (mirrors server parse_hms)
+  if (!str) return null;
+  const parts = String(str).trim().split(":").map(Number);
+  if (parts.some((n) => Number.isNaN(n))) return null;
+  return parts.reduce((a, n) => a * 60 + n, 0);
+}
+function setAvatar(el, seed, style, fallback) {   // real avatar image; letter shown until it loads / if it fails
+  el.textContent = fallback || "";
+  if (!seed) return;
+  const img = new Image();
+  img.className = "avatar-img"; img.alt = "";
+  img.onload = () => { el.textContent = ""; el.appendChild(img); };
+  img.src = `https://api.dicebear.com/9.x/${style}/svg?seed=${encodeURIComponent(seed)}`;
+}
+
 // ---- Mythos session / wallet ----------------------------------------------
 async function loadSession() {
   try {
     const s = await (await fetch("/api/session")).json();
     cost = s.cost || 2;
-    $("#mythos-user").textContent = (s.user || "?").trim().charAt(0).toUpperCase();
+    setAvatar($("#mythos-user"), s.email || s.user, "thumbs", (s.user || "?").trim().charAt(0).toUpperCase());
     $("#mythos-user").title = s.user || "";
     refreshCredits(s.balance);
   } catch { /* not launched */ }
@@ -63,6 +85,40 @@ function clientCost() {
 }
 function updateCost() { $("#dlcost").textContent = "· " + clientCost() + " cr"; }
 
+// ---- trim slider (two handles, two-way synced with the text inputs) --------
+let trimDur = 0;
+function setupTrim(duration) {
+  trimDur = Math.floor(duration || 0);
+  const wrap = $("#trimRange");
+  if (!trimDur) { wrap.classList.add("hidden"); return; }
+  const rs = $("#rangeStart"), re = $("#rangeEnd");
+  rs.max = re.max = trimDur; rs.value = 0; re.value = trimDur;
+  $("#rangeMaxLbl").textContent = fmtClock(trimDur);
+  wrap.classList.remove("hidden");
+  paintRange();
+}
+function paintRange() {
+  if (!trimDur) return;
+  const rs = +$("#rangeStart").value, re = +$("#rangeEnd").value;
+  $("#rangeSel").style.left = (rs / trimDur * 100) + "%";
+  $("#rangeSel").style.right = (100 - re / trimDur * 100) + "%";
+}
+function onSlide(which) {            // handle moved -> write the text input (extreme = empty = no trim)
+  let rs = +$("#rangeStart").value, re = +$("#rangeEnd").value;
+  if (which === "start" && rs > re - 1) { rs = Math.max(0, re - 1); $("#rangeStart").value = rs; }
+  if (which === "end" && re < rs + 1) { re = Math.min(trimDur, rs + 1); $("#rangeEnd").value = re; }
+  $("#trimStart").value = rs > 0 ? fmtClock(rs) : "";
+  $("#trimEnd").value = re < trimDur ? fmtClock(re) : "";
+  paintRange(); updateCost();
+}
+function onTrimText() {              // text typed -> move the handles
+  if (!trimDur) { updateCost(); return; }
+  const s = parseClock($("#trimStart").value), e = parseClock($("#trimEnd").value);
+  $("#rangeStart").value = s != null ? Math.min(Math.max(0, s), trimDur) : 0;
+  $("#rangeEnd").value = e != null ? Math.min(Math.max(0, e), trimDur) : trimDur;
+  paintRange(); updateCost();
+}
+
 async function fetchInfo(url) {
   hide("#empty"); hide("#result"); hide("#playlist"); hide("#error"); show("#loading");
   try {
@@ -90,7 +146,7 @@ function renderSingle(d) {
   $("#durbadge").style.display = d.duration_str ? "" : "none";
   $("#title").textContent = d.title;
   $("#uploader").textContent = d.uploader || d.extractor;
-  $("#ch-avatar").textContent = (d.uploader || d.extractor || "?").trim().charAt(0);
+  setAvatar($("#ch-avatar"), d.uploader || d.extractor, "shapes", (d.uploader || d.extractor || "?").trim().charAt(0).toUpperCase());
   $("#meta").textContent = [d.extractor, humanCount(d.view_count), d.duration_str].filter(Boolean).join("  •  ");
   $("#result .dl-panel-head").textContent = "Choose a format";
 
@@ -98,6 +154,7 @@ function renderSingle(d) {
   $("#trimStart").value = ""; $("#trimEnd").value = "";
   $("#optSubs").checked = $("#optMusic").checked = $("#optSponsor").checked = false;
   $("#adv").open = false;
+  setupTrim(d.duration);
 
   selected = "best";
   $("#qualities").innerHTML = "";
@@ -232,7 +289,9 @@ $("#search").addEventListener("submit", (e) => { e.preventDefault(); const u = $
 $("#downloadBtn").addEventListener("click", startDownload);
 $("#plDownloadBtn").addEventListener("click", startPlaylist);
 $("#topupBtn").addEventListener("click", topUp);
-["trimStart", "trimEnd"].forEach((id) => $("#" + id).addEventListener("input", updateCost));
+["trimStart", "trimEnd"].forEach((id) => $("#" + id).addEventListener("input", onTrimText));
+$("#rangeStart").addEventListener("input", () => onSlide("start"));
+$("#rangeEnd").addEventListener("input", () => onSlide("end"));
 ["optSubs", "optMusic", "optSponsor"].forEach((id) => $("#" + id).addEventListener("change", updateCost));
 document.querySelectorAll(".ex").forEach((b) => b.addEventListener("click", () => {
   $("#url").value = b.dataset.url; fetchInfo(b.dataset.url);
