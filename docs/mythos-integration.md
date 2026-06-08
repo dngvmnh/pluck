@@ -8,11 +8,18 @@ SDK is symmetric.
 
 **Python** (Pluck): `pip install mythos-sdk`
 ```bash
-pip install mythos-sdk            # FastAPI/Starlette apps
+pip install mythos-sdk            # FastAPI / Starlette apps
 # (not yet on PyPI — for local dev, install from the Mythos SDK repo:
 #  pip install /path/to/mythos-sdk/packages/python)
 ```
 **Node**: `npm install @mythos/sdk` (Express apps).
+
+> **Framework support.** The Python convenience helpers (`require_launch_token`, `handshake_router`)
+> are **FastAPI/Starlette-native** — `require_launch_token` is a FastAPI dependency and
+> `handshake_router` is a Starlette router. The Node helpers (`requireLaunchToken`, `handshakeRoute`)
+> are **Express** middleware/handlers. On any other framework (Flask, Django, Koa, Fastify), drop down
+> to the framework-agnostic primitive `verify_launch_token` / `verifyLaunchToken` and wire the
+> consume + meter HTTP calls yourself — see [Other frameworks](#other-frameworks) below.
 
 ## 2. Configure (point the SDK at Mythos)
 Set before the app starts (Pluck does this at the top of `server.py`):
@@ -94,9 +101,11 @@ Then verify (see the root `README.md` table): no-launch → denied; launch → a
 ## Where Pluck implements each piece
 | Hook | File |
 |---|---|
-| handshake + config + session | `server.py` (top + `add_middleware` + `include_router`) |
-| auth gate | `server.py` `consumer()` / `/dashboard` |
-| payment | `server.py` `/api/download` (`report_usage`) |
+| config | `server.py:21` (`MYTHOS_API_URL` / `MYTHOS_LISTING_ID` env defaults) |
+| session middleware | `server.py:52` (`add_middleware(SessionMiddleware, …)`) |
+| handshake | `server.py:53` (`include_router(handshake_router)`) |
+| auth gate | `server.py:127` (`consumer()`) / `server.py:602` (`/dashboard`) |
+| payment | `server.py:507` (`/api/download` → `report_usage`) |
 | credits UI | `static/app.js` (`/api/session`, balance pill, 402 → Top up) |
 
 ---
@@ -123,11 +132,11 @@ Pluck is the reference implementation. To ship your own Mythos Producer, follow 
 
 | # | What | Pluck reference |
 |---|------|-----------------|
-| 1 | Mount `handshake_router` (or Node equivalent) | `server.py` line 48 |
-| 2 | Add `/dashboard?lt=` route → `require_launch_token` → save session | `server.py` `/dashboard` |
-| 3 | Gate every protected route: reject if no session | `server.py` `consumer()` |
-| 4 | Call `report_usage` before doing the paid action | `server.py` `/api/download` |
-| 5 | Return **402** on `InsufficientFundsError` and surface a **Top up** link | `server.py` + `app.js` |
+| 1 | Mount `handshake_router` (or Node equivalent) | `server.py:53` |
+| 2 | Add `/dashboard?lt=` route → `require_launch_token` → save session | `server.py:602` (`/dashboard`) |
+| 3 | Gate every protected route: reject if no session | `server.py:127` (`consumer()`) |
+| 4 | Call `report_usage` before doing the paid action | `server.py:507` (`/api/download`) |
+| 5 | Return **402** on `InsufficientFundsError` and surface a **Top up** link | `server.py:508` + `app.js` |
 
 ### Session middleware (Python)
 
@@ -139,6 +148,31 @@ app.add_middleware(SessionMiddleware, secret_key=os.environ["SESSION_SECRET"])
 Use a real random secret in production (`python -c "import secrets; print(secrets.token_hex(32))"`).
 
 ### What Mythos provides at runtime
+
+```mermaid
+sequenceDiagram
+    participant C as Consumer (browser)
+    participant M as Mythos
+    participant A as Your app (SDK)
+
+    C->>M: open your listing
+    M->>M: mint RS256 launch token (single-use, 5 min TTL)
+    M-->>C: 302 → YOUR_APP/dashboard?lt=<token>
+    C->>A: GET /dashboard?lt=<token>
+    A->>M: GET /.well-known/jwks.json (cached 10 min)
+    A->>A: verify RS256 sig + aud + exp
+    A->>M: POST /api/apps/sessions/:jti/consume
+    M-->>A: 200 (first) / 409 (replay → 401)
+    A->>A: store session in your own cookie
+    A-->>C: 303 → / (authenticated)
+    Note over C,A: later, on a paid action…
+    C->>A: POST /api/download
+    A->>M: POST /api/apps/sessions/:jti/meter {credits}
+    M-->>A: 200 / 402 insufficient / 404 unknown
+    A-->>C: do the work, or 402 "Out of credits → Top up"
+```
+
+Plain-text fallback:
 
 ```
 Consumer opens your Mythos listing
@@ -177,3 +211,114 @@ export MYTHOS_LISTING_ID=11111111-1111-1111-1111-111111111111   # mock accepts a
 - [ ] HTTPS on your app (launch tokens use `aud` tied to your registered domain)
 - [ ] Handle `SessionNotFoundError` (404) — session expired or unknown; redirect to Mythos to re-launch
 - [ ] `GET /.well-known/mythos-handshake` returns 200 (handshake_router mounted)
+
+---
+
+## 6. Full Node / Express example
+
+The symmetric Pluck equivalent in Express. Same three hooks, same redirect-then-own-session pattern.
+
+```js
+import express from 'express';
+import session from 'express-session';
+import {
+  requireLaunchToken, reportUsage, handshakeRoute,
+  InsufficientFundsError, SessionNotFoundError,
+} from '@mythos/sdk';
+
+// Env (set before boot):
+//   MYTHOS_API_URL=https://api.mythos.work   MYTHOS_LISTING_ID=<your-listing-uuid>
+const app = express();
+app.use(express.json());
+app.use(session({
+  secret: process.env.SESSION_SECRET,     // random in prod
+  resave: false, saveUninitialized: false,
+  cookie: { httpOnly: true, secure: true, sameSite: 'lax' },
+}));
+
+// (1) handshake — publish-time check
+app.get('/.well-known/mythos-handshake', handshakeRoute());
+
+// (2) auth — verify + consume once, then keep your OWN session
+app.get('/dashboard', requireLaunchToken(), (req, res) => {
+  req.session.mythos = req.mythos;        // { userId, email, displayName, listingId, sessionJti }
+  res.redirect(303, '/');
+});
+
+// gate every protected route on your own session (NOT the launch token — it's single-use)
+function consumer(req, res, next) {
+  if (!req.session.mythos) return res.status(401).json({ error: 'Launch from Mythos first' });
+  req.consumer = req.session.mythos;
+  next();
+}
+
+// (3) payment — meter before doing the paid work
+app.post('/api/download', consumer, async (req, res) => {
+  try {
+    await reportUsage(req.consumer.sessionJti, { credits: 2, reason: 'video-download' });
+  } catch (e) {
+    if (e instanceof InsufficientFundsError) return res.status(402).json({ error: 'Out of credits — top up' });
+    if (e instanceof SessionNotFoundError)   return res.status(401).json({ error: 'Re-launch from Mythos' });
+    throw e;
+  }
+  // … do the actual work …
+  res.json({ ok: true });
+});
+
+app.listen(8000);
+```
+
+> The Node `requireLaunchToken()` reads `?lt=`, verifies the RS256 signature against the cached JWKS,
+> checks `aud`, and calls `/consume` — identical semantics to the Python `require_launch_token`
+> dependency. It populates `req.mythos`; you copy it into your own session and never touch `?lt=` again.
+
+## Other frameworks
+
+The convenience helpers are FastAPI (Python) and Express (Node) only. On anything else, build the
+three hooks on top of the framework-agnostic primitive and two plain HTTP calls.
+
+**1. Verify + consume** (do this on the `/dashboard?lt=` landing route):
+```python
+from mythos_sdk import verify_launch_token        # framework-agnostic
+import httpx, os
+
+API = os.environ["MYTHOS_API_URL"]
+
+async def land(lt: str):
+    session = await verify_launch_token(lt)        # RS256 + aud/exp; raises on bad token → return 401
+    async with httpx.AsyncClient() as c:           # single-use enforcement (do it yourself off-FastAPI)
+        r = await c.post(f"{API}/api/apps/sessions/{session.sessionJti}/consume")
+    if r.status_code == 409:
+        return 401                                 # replay
+    # store session.sessionJti + identity in your own session store, redirect to your app
+```
+
+**2. Handshake** — just return JSON on `GET /.well-known/mythos-handshake`:
+```python
+{"ok": True, "sdk_version": "0.1.0"}
+```
+
+**3. Meter** — `report_usage(jti, credits=…, reason=…)` works on any framework (it's a plain HTTP
+call under the hood); catch `InsufficientFundsError` (402) and `SessionNotFoundError` (404).
+
+The endpoints these map to are in the **"What the SDK calls under the hood"** table in §3.
+
+---
+
+## 7. Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Every launch → **401 "Invalid launch token"** | `MYTHOS_LISTING_ID` doesn't match the token's `aud` | Set `MYTHOS_LISTING_ID` to the exact listing UUID Mythos minted the token for (`MYTHOS_LISTING_IDS` for multi-listing) |
+| 401 even on a **fresh** token | App pointed at the wrong Mythos, or JWKS unreachable | Check `MYTHOS_API_URL`; confirm `GET {API}/.well-known/jwks.json` returns keys |
+| Worked once, then 401 on **refresh** | Launch tokens are single-use; you re-verified `?lt=` instead of using your own session | Save the session on first landing, redirect to a clean URL, gate routes on your session — never re-read `?lt=` |
+| 401 right after **key rotation** | Cached JWKS is stale | None needed — SDK caches 10 min and force-refetches on `kid` miss; only fails if the API was unreachable during refetch |
+| `report_usage` raises **`SessionNotFoundError`** (404) | Session expired/unknown on Mythos | Redirect the consumer back to Mythos to re-launch |
+| `report_usage` always **402** | Consumer wallet is empty | Surface a **Top up** link to their Mythos wallet; in dev use the mock's `/api/wallet/topup` |
+| Python: `KeyError`/empty session on `/dashboard` | `SessionMiddleware` not added | `app.add_middleware(SessionMiddleware, secret_key=…)` **before** routes (see §5) |
+| `MYTHOS_LISTING_ID ... env var is required` at boot | Neither `MYTHOS_LISTING_ID` nor `MYTHOS_LISTING_IDS` set | Set one before the app imports/starts |
+| Handshake check fails at publish time | `handshake_router` / `handshakeRoute()` not mounted | Mount it; confirm `GET /.well-known/mythos-handshake` → `{ ok, sdk_version }` |
+
+**Dev tip — reproduce token failures deterministically** with the mock's fault-injection endpoints
+(rotate keys, mint expired/wrong-`aud` tokens, top up wallets); see the fault-injection block in the
+root [`README.md`](../README.md).
