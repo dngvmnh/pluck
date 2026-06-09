@@ -1,0 +1,13 @@
+# Optional heavy ML features. Install to enable Transcribe (Whisper) and Stems (Demucs):
+#   pip install -r requirements-ml.txt
+# The core app runs without these; /api/capabilities reports what's available and the
+# UI hides features whose dependency chain is incomplete.
+
+faster-whisper      # AI transcription -> .srt + .txt   (output=transcript); pulls ctranslate2
+
+demucs              # stem separation -> vocals/drums/bass/other   (output=stems); pulls torch + torchaudio
+torchcodec          # REQUIRED by torch/torchaudio >= 2.1 to decode audio for Demucs.
+                    # Without it, stems fail at runtime with:
+                    #   "TorchCodec is required for load_with_torchcodec"
+                    # torchcodec needs a matching torch + system FFmpeg libs; see
+                    # https://github.com/pytorch/torchcodec for the version table.

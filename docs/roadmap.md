@@ -13,11 +13,17 @@ up). Heavier features just cost more credits. Ordered easy → hard.
 | Subtitles | `subtitles` | +1 |
 | Music mode | `music` | +1 |
 | SponsorBlock | `sponsorblock` | +1 |
+| Clip → GIF | `gif` | +3 |
+| Format convert | `convert` | +1 |
+| Chapter split | `chapters` | +2 |
+| Audio remaster | `remaster` | +2 |
+| AI transcript (Whisper) | `transcribe` | +8 |
+| Stems (Demucs) | `stems` | +15 |
 | Playlist (per matched video) | `playlist-N` | 2 each |
-| AI transcript (Tier 1) | `transcribe` | +8 |
-| Stems (Tier 1) | `stems` | +15 |
+| Multi-URL (per link) | `download` ×N | 2 each |
 
-`/api/download` sums the chosen options into the credit charge — see `cost_for()` in `server.py`.
+`/api/download` sums the chosen options into the credit charge — the single source of truth is
+`cost_for()` / `PRICING` in `pluck/pricing.py`, also served at `GET /api/pricing` for the live client estimate.
 
 ## Tier 0 — ✅ shipped (yt-dlp / ffmpeg native)
 - **Trim on download** — start/end → clip (downloads then cuts locally with stream copy).
@@ -29,13 +35,19 @@ up). Heavier features just cost more credits. Ordered easy → hard.
 - **Bulk playlist + smart filter** — paste a playlist/channel; filter by min-minutes / title keyword;
   downloads the batch (capped) and delivers a `.zip`.
 
-All exposed via the **Advanced ▾** panel + a **playlist** view, with a live credit cost.
+All exposed via an **output-mode** selector + an **Options** panel + a **playlist** view, with a live credit cost.
 
-## Tier 1 — planned (free, but heavy compute / big deps)
-- **AI transcription / subtitles** — `faster-whisper` (tiny/base, CPU). Slow; flag-gated; metered high.
-- **Audio denoise / remaster** — ffmpeg `afftdn`, `dynaudnorm`, `highpass/lowpass`.
-- **Stem separation** — `demucs` (vocals / drums / instrumental); minutes per song on CPU.
-- **Format convert / clip → GIF / chapter-split / paste-many-URLs** — small ffmpeg + loop additions.
+## Tier 1 — ✅ shipped
+- **Clip → GIF** — palettegen/paletteuse two-pass, configurable fps/width, 30s cap (`pipelines/gif.py`).
+- **Format convert** — remux (stream-copy) or transcode to mp4/mkv/webm/mp3/m4a/opus/wav/flac (`pipelines/convert.py`).
+- **Chapter split** — split by the video's chapters → `.zip` (`pipelines/chapters.py`).
+- **Audio remaster / denoise** — ffmpeg `afftdn` + `dynaudnorm` + band-pass (`pipelines/remaster.py`).
+- **Multi-URL grab** — paste many links → one charged job each (`routes/download.py` fan-out).
+- **Persistent jobs + Library** — SQLite-backed history that survives restarts (`db.py`, `jobs.py`).
+
+### Tier 1 — optional (heavy deps; install `requirements-ml.txt`)
+- **AI transcription** — `faster-whisper` (base, CPU int8) → `.srt` + `.txt` (`pipelines/transcribe.py`). Capability-gated.
+- **Stem separation** — `demucs` → vocals / drums / bass / other → `.zip` (`pipelines/stems.py`). Capability-gated.
 
 ## Tier 2 — paid infrastructure (planned, not built)
 - **Auto-subscriptions / feed auto-download** — APScheduler/Celery worker + persistent DB

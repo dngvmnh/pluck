@@ -22,7 +22,7 @@ pip install mythos-sdk            # FastAPI / Starlette apps
 > consume + meter HTTP calls yourself — see [Other frameworks](#other-frameworks) below.
 
 ## 2. Configure (point the SDK at Mythos)
-Set before the app starts (Pluck does this at the top of `server.py`):
+Set before the app starts (Pluck does this in `pluck/config.py`, imported before the SDK loads):
 ```python
 os.environ.setdefault("MYTHOS_API_URL", "http://localhost:4000")          # https://api.mythos.work in prod
 os.environ.setdefault("MYTHOS_LISTING_ID", "<your-listing-id>")           # the listing Mythos assigns you
@@ -99,14 +99,17 @@ Then verify (see the root `README.md` table): no-launch → denied; launch → a
 /expired → 401; download → wallet debited; out of credits → 402 → top up.
 
 ## Where Pluck implements each piece
+Pluck was refactored from one `server.py` into a `pluck/` package (`server.py` is now a thin shim
+re-exporting `pluck.app:app`). Each Mythos hook now lives in a focused module:
+
 | Hook | File |
 |---|---|
-| config | `server.py:21` (`MYTHOS_API_URL` / `MYTHOS_LISTING_ID` env defaults) |
-| session middleware | `server.py:52` (`add_middleware(SessionMiddleware, …)`) |
-| handshake | `server.py:53` (`include_router(handshake_router)`) |
-| auth gate | `server.py:127` (`consumer()`) / `server.py:602` (`/dashboard`) |
-| payment | `server.py:507` (`/api/download` → `report_usage`) |
-| credits UI | `static/app.js` (`/api/session`, balance pill, 402 → Top up) |
+| config | `pluck/config.py` (`MYTHOS_API_URL` / `MYTHOS_LISTING_ID` env defaults, set before the SDK loads) |
+| session middleware | `pluck/app.py` (`add_middleware(SessionMiddleware, …)`) |
+| handshake | `pluck/app.py` (`include_router(handshake_router)`) |
+| auth gate | `pluck/mythos.py` (`consumer()`) / `pluck/routes/pages.py` (`/dashboard` token exchange) |
+| payment | `pluck/routes/download.py` (`_start_single` / `_start_playlist` → `report_usage`) |
+| credits UI | `static/js/session.js` + `static/js/result.js` (`/api/session`, balance pill, 402 → Top up toast) |
 
 ---
 
@@ -132,11 +135,11 @@ Pluck is the reference implementation. To ship your own Mythos Producer, follow 
 
 | # | What | Pluck reference |
 |---|------|-----------------|
-| 1 | Mount `handshake_router` (or Node equivalent) | `server.py:53` |
-| 2 | Add `/dashboard?lt=` route → `require_launch_token` → save session | `server.py:602` (`/dashboard`) |
-| 3 | Gate every protected route: reject if no session | `server.py:127` (`consumer()`) |
-| 4 | Call `report_usage` before doing the paid action | `server.py:507` (`/api/download`) |
-| 5 | Return **402** on `InsufficientFundsError` and surface a **Top up** link | `server.py:508` + `app.js` |
+| 1 | Mount `handshake_router` (or Node equivalent) | `pluck/app.py` |
+| 2 | Add `/dashboard?lt=` route → `require_launch_token` → save session | `pluck/routes/pages.py` (`/dashboard`) |
+| 3 | Gate every protected route: reject if no session | `pluck/mythos.py` (`consumer()`) |
+| 4 | Call `report_usage` before doing the paid action | `pluck/routes/download.py` |
+| 5 | Return **402** on `InsufficientFundsError` and surface a **Top up** link | `pluck/routes/download.py` + `static/js/result.js` |
 
 ### Session middleware (Python)
 

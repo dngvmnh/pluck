@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pluck</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/styles.css?v=2">
 <link rel="icon" href="/static/pluck-logo.png">
 </head>
 <body>
@@ -19,7 +19,7 @@
   </div>
   <form class="search" id="search">
     <div class="search-wrap">
-      <input id="url" class="search-input" type="text" placeholder="Paste a video link…" autocomplete="off" spellcheck="false">
+      <input id="url" class="search-input" type="text" placeholder="Paste a video link… (or several, one per line)" autocomplete="off" spellcheck="false">
       <button id="url-clear" class="url-clear" type="button" aria-label="Clear" style="display:none">×</button>
     </div>
     <button class="search-btn" type="submit" aria-label="Grab">
@@ -27,6 +27,9 @@
     </button>
   </form>
   <div class="hdr-right">
+    <button id="themeBtn" class="icon-btn" title="Toggle theme" aria-label="Toggle theme">
+      <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 3a9 9 0 109 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 01-9.54-3.54c0-1.4.54-2.68 1.42-3.64A9 9 0 0012 3z"/></svg>
+    </button>
     <span class="mythos-tag" title="Authenticated &amp; metered via Mythos">◆ Mythos</span>
     <button id="topupBtn" class="btn btn-pill hidden">Top up +10</button>
     <span id="mythos-credits" class="credits-pill">◎ —</span>
@@ -34,93 +37,195 @@
   </div>
 </header>
 
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button class="tab sel" data-tab="grab" role="tab" aria-selected="true">Grab</button>
+  <button class="tab" data-tab="library" role="tab" aria-selected="false">Library</button>
+  <button class="tab" data-tab="settings" role="tab" aria-selected="false">Settings</button>
+</nav>
+
 <main class="container">
-  <!-- empty state -->
-  <section id="empty" class="empty">
-    <div class="empty-mark"><img src="/static/pluck-logo.png" alt="Pluck"></div>
-    <h1>Paste a link to grab a video</h1>
-    <p class="muted">Works with YouTube, Vimeo and 1000+ sites via <b>yt-dlp</b>. Choose a quality and download.</p>
-    <p class="notice">Download only content you’re authorized to (your own uploads, public / Creative-Commons,
-       or platform-permitted). DRM-protected, paywalled, or login-gated content is not supported.</p>
-    <div class="examples">
-      <span class="muted">Try:</span>
-      <button class="ex" data-url="https://www.youtube.com/watch?v=aqz-KE-bpKQ">Big Buck Bunny (CC-BY)</button>
-      <button class="ex" data-url="https://vimeo.com/1084537">Vimeo sample</button>
-      <button class="ex" data-url="https://www.youtube.com/watch?v=jNQXAC9IVRw">Me at the zoo</button>
-      <button class="ex" data-url="https://soundcloud.com/forss/flickermood">SoundCloud</button>
-    </div>
-  </section>
+  <!-- ============ GRAB TAB ============ -->
+  <section id="tab-grab" class="tabpanel" role="tabpanel">
+    <!-- empty state -->
+    <section id="empty" class="empty">
+      <div class="empty-mark"><img src="/static/pluck-logo.png" alt="Pluck"></div>
+      <h1>Paste a link to grab a video</h1>
+      <p class="muted">Works with YouTube, Vimeo and 1000+ sites via <b>yt-dlp</b>. Download, clip, convert, remaster, transcribe and more.</p>
+      <p class="notice">Download only content you're authorized to (your own uploads, public / Creative-Commons,
+         or platform-permitted). DRM-protected, paywalled, or login-gated content is not supported.</p>
+      <div class="examples">
+        <span class="muted">Try:</span>
+        <button class="ex" data-url="https://www.youtube.com/watch?v=aqz-KE-bpKQ">Big Buck Bunny (CC-BY)</button>
+        <button class="ex" data-url="https://vimeo.com/1084537">Vimeo sample</button>
+        <button class="ex" data-url="https://www.youtube.com/watch?v=jNQXAC9IVRw">Me at the zoo</button>
+        <button class="ex" data-url="https://soundcloud.com/forss/flickermood">SoundCloud</button>
+      </div>
+    </section>
 
-  <!-- loading -->
-  <section id="loading" class="hidden loading"><div class="spinner"></div><span>Reading link…</span></section>
-  <section id="error" class="hidden banner-err" role="alert"></section>
+    <!-- loading -->
+    <section id="loading" class="hidden loading"><div class="spinner"></div><span>Reading link…</span></section>
 
-  <!-- result -->
-  <section id="result" class="hidden result">
-    <div class="thumb-wrap">
-      <img id="thumb" class="thumb" alt="">
-      <span id="durbadge" class="dur-badge"></span>
-    </div>
-    <h2 id="title" class="vid-title"></h2>
-    <div class="channel-row">
-      <span id="ch-avatar" class="ch-avatar"></span>
-      <div><div id="uploader" class="ch-name"></div><div id="meta" class="muted small"></div></div>
-    </div>
-    <div class="dl-panel">
-      <div class="dl-panel-head">Choose a format</div>
-      <div id="qualities" class="qualities"></div>
-      <details class="adv" id="adv"><summary>Advanced</summary>
-        <div class="adv-body">
-          <div class="adv-row"><span class="adv-label">✂ Trim</span>
-            <input id="trimStart" class="adv-in tin" placeholder="start" autocomplete="off">
-            <span class="dim">–</span>
-            <input id="trimEnd" class="adv-in tin" placeholder="end" autocomplete="off"></div>
-          <div class="range hidden" id="trimRange">
-            <div class="range-track"><div class="range-sel" id="rangeSel"></div></div>
-            <input type="range" id="rangeStart" min="0" max="100" value="0" step="1" aria-label="Clip start">
-            <input type="range" id="rangeEnd" min="0" max="100" value="100" step="1" aria-label="Clip end">
-            <div class="range-scale"><span id="rangeMinLbl">0:00</span><span id="rangeMaxLbl"></span></div>
-          </div>
-          <label class="adv-toggle"><input type="checkbox" id="optSubs"> 📝 Subtitles (.srt, embedded) <span class="cpill">+1</span></label>
-          <label class="adv-toggle"><input type="checkbox" id="optMusic"> 🎵 Music mode — MP3 + ID3 tags + album art <span class="cpill">+1</span></label>
-          <label class="adv-toggle"><input type="checkbox" id="optSponsor"> ⏭ Remove sponsor / intro / outro (SponsorBlock) <span class="cpill">+1</span></label>
+    <!-- multi-URL batch preview -->
+    <section id="batch" class="hidden dl-panel">
+      <div class="dl-panel-head">Batch grab — <span id="batch-count"></span> links detected</div>
+      <div id="batch-list" class="batch-list"></div>
+      <div class="adv-row" style="margin-top:12px">
+        <span class="adv-label">Each as</span>
+        <select id="batch-choice" class="adv-in">
+          <option value="best">Best video</option>
+          <option value="1080">1080p</option>
+          <option value="720">720p</option>
+          <option value="audio-mp3">MP3 audio</option>
+        </select>
+      </div>
+      <button id="batchDownloadBtn" class="btn-dl">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>
+        Grab all <span id="batchcost"></span>
+      </button>
+    </section>
+
+    <!-- single result (watch-page style) -->
+    <section id="result" class="hidden result">
+      <div class="thumb-wrap">
+        <img id="thumb" class="thumb" alt="">
+        <span id="durbadge" class="dur-badge"></span>
+      </div>
+      <h2 id="title" class="vid-title"></h2>
+      <div class="channel-row">
+        <span id="ch-avatar" class="ch-avatar"></span>
+        <div><div id="uploader" class="ch-name"></div><div id="meta" class="muted small"></div></div>
+      </div>
+
+      <div class="dl-panel">
+        <!-- output mode segmented control -->
+        <div class="dl-panel-head">Output</div>
+        <div id="modes" class="modes" role="tablist" aria-label="Output mode"></div>
+
+        <!-- VIDEO / quality -->
+        <div class="mode-pane" data-pane="video">
+          <div id="qualities" class="qualities"></div>
         </div>
-      </details>
-      <button id="downloadBtn" class="btn-dl">
-        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>
-        Download <span id="dlcost"></span>
-      </button>
-    </div>
+        <!-- CONVERT target -->
+        <div class="mode-pane hidden" data-pane="convert">
+          <div class="adv-row"><span class="adv-label">Convert to</span>
+            <select id="convertTo" class="adv-in">
+              <optgroup label="Video"><option value="mp4">MP4</option><option value="mkv">MKV</option><option value="webm">WebM</option></optgroup>
+              <optgroup label="Audio"><option value="mp3">MP3</option><option value="m4a">M4A</option><option value="opus">Opus</option><option value="wav">WAV</option><option value="flac">FLAC</option></optgroup>
+            </select>
+          </div>
+        </div>
+        <!-- GIF options -->
+        <div class="mode-pane hidden" data-pane="gif">
+          <p class="muted small">Tip: set a <b>clip window</b> below — GIFs are capped at 30s.</p>
+          <div class="adv-row"><span class="adv-label">FPS</span>
+            <input id="gifFps" class="adv-in tin" type="number" min="1" max="30" value="12">
+            <span class="adv-label">Width</span>
+            <input id="gifWidth" class="adv-in tin" type="number" min="120" max="1280" step="20" value="480"> px</div>
+        </div>
+        <!-- CHAPTERS info -->
+        <div class="mode-pane hidden" data-pane="chapters">
+          <div id="chapters-info" class="muted small"></div>
+        </div>
+        <!-- AUDIO / REMASTER / TRANSCRIBE / STEMS share the simple pane -->
+        <div class="mode-pane hidden" data-pane="simple">
+          <p id="simple-desc" class="muted small"></p>
+        </div>
+
+        <!-- modifiers (shown contextually) -->
+        <details class="adv" id="adv"><summary>Options</summary>
+          <div class="adv-body">
+            <div class="adv-section" data-mod="clip">
+              <div class="adv-row"><span class="adv-label">✂ Trim</span>
+                <input id="trimStart" class="adv-in tin" placeholder="start" autocomplete="off">
+                <span class="dim">–</span>
+                <input id="trimEnd" class="adv-in tin" placeholder="end" autocomplete="off"></div>
+              <div class="range hidden" id="trimRange">
+                <div class="range-track"><div class="range-sel" id="rangeSel"></div></div>
+                <input type="range" id="rangeStart" min="0" max="100" value="0" step="1" aria-label="Clip start">
+                <input type="range" id="rangeEnd" min="0" max="100" value="100" step="1" aria-label="Clip end">
+                <div class="range-scale"><span id="rangeMinLbl">0:00</span><span id="rangeMaxLbl"></span></div>
+              </div>
+            </div>
+            <label class="adv-toggle" data-mod="subs"><input type="checkbox" id="optSubs"> 📝 Subtitles (.srt, embedded) <span class="cpill" data-price="subtitles">+1</span></label>
+            <label class="adv-toggle" data-mod="music"><input type="checkbox" id="optMusic"> 🎵 Music tags — ID3 + album art <span class="cpill" data-price="music">+1</span></label>
+            <label class="adv-toggle" data-mod="remaster"><input type="checkbox" id="optRemaster"> 🎚 Remaster — denoise + normalize <span class="cpill" data-price="remaster">+2</span></label>
+            <label class="adv-toggle" data-mod="sponsor"><input type="checkbox" id="optSponsor"> ⏭ Remove sponsor / intro / outro <span class="cpill" data-price="sponsorblock">+1</span></label>
+          </div>
+        </details>
+
+        <button id="downloadBtn" class="btn-dl">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>
+          Download <span id="dlcost"></span>
+        </button>
+      </div>
+    </section>
+
+    <!-- playlist (bulk) -->
+    <section id="playlist" class="hidden result">
+      <div class="thumb-wrap"><img id="pl-thumb" class="thumb" alt=""><span id="pl-count" class="dur-badge"></span></div>
+      <h2 id="pl-title" class="vid-title"></h2>
+      <div id="pl-by" class="muted small" style="margin-bottom:10px"></div>
+      <div id="pl-items"></div>
+      <div class="dl-panel">
+        <div class="dl-panel-head">Bulk download — filter, then grab the batch</div>
+        <div class="adv-row"><span class="adv-label">Filter</span>
+          <input id="plMin" class="adv-in" placeholder="min minutes" autocomplete="off">
+          <input id="plKw" class="adv-in" placeholder="title contains…" autocomplete="off"></div>
+        <button id="plDownloadBtn" class="btn-dl">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>
+          Download batch <span id="plcost"></span>
+        </button>
+      </div>
+    </section>
+
+    <!-- active downloads -->
+    <section id="downloads" class="downloads hidden">
+      <div class="dl-hrow">
+        <h3 class="dl-h">Active downloads</h3>
+        <button id="clear-done-btn" class="btn-text">Clear done</button>
+      </div>
+      <div id="jobs"></div>
+    </section>
   </section>
 
-  <!-- playlist (bulk) -->
-  <section id="playlist" class="hidden result">
-    <div class="thumb-wrap"><img id="pl-thumb" class="thumb" alt=""><span id="pl-count" class="dur-badge"></span></div>
-    <h2 id="pl-title" class="vid-title"></h2>
-    <div id="pl-by" class="muted small" style="margin-bottom:10px"></div>
-    <div id="pl-items"></div>
-    <div class="dl-panel">
-      <div class="dl-panel-head">Bulk download — filter, then grab the batch</div>
-      <div class="adv-row"><span class="adv-label">Filter</span>
-        <input id="plMin" class="adv-in" placeholder="min minutes" autocomplete="off">
-        <input id="plKw" class="adv-in" placeholder="title contains…" autocomplete="off"></div>
-      <button id="plDownloadBtn" class="btn-dl">
-        <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>
-        Download batch <span id="plcost"></span>
-      </button>
-    </div>
-  </section>
-
-  <!-- downloads -->
-  <section id="downloads" class="downloads hidden">
+  <!-- ============ LIBRARY TAB ============ -->
+  <section id="tab-library" class="tabpanel hidden" role="tabpanel">
     <div class="dl-hrow">
-      <h3 class="dl-h">Downloads</h3>
-      <button id="clear-done-btn" class="btn-text">Clear done</button>
+      <h3 class="dl-h">Library</h3>
+      <button id="refresh-lib-btn" class="btn-text">↻ Refresh</button>
     </div>
-    <div id="jobs"></div>
+    <div id="library-empty" class="muted" style="padding:24px 0">No downloads yet. Grab something!</div>
+    <div id="library"></div>
+  </section>
+
+  <!-- ============ SETTINGS TAB ============ -->
+  <section id="tab-settings" class="tabpanel hidden" role="tabpanel">
+    <h3 class="dl-h" style="margin-bottom:16px">Settings</h3>
+    <div class="settings-card">
+      <div class="set-row"><label for="setTheme">Theme</label>
+        <select id="setTheme" class="adv-in">
+          <option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option>
+        </select></div>
+      <div class="set-row"><label for="setQuality">Default quality</label>
+        <select id="setQuality" class="adv-in">
+          <option value="best">Best available</option><option value="2160">4K</option>
+          <option value="1080">1080p</option><option value="720">720p</option>
+          <option value="audio-mp3">MP3 audio</option>
+        </select></div>
+      <div class="set-row"><label for="setOutput">Default output</label>
+        <select id="setOutput" class="adv-in">
+          <option value="video">Video</option><option value="audio">Audio</option>
+        </select></div>
+      <div class="set-row"><label for="setGifFps">GIF defaults</label>
+        <span><input id="setGifFps" class="adv-in tin" type="number" min="1" max="30" value="12"> fps ·
+        <input id="setGifWidth" class="adv-in tin" type="number" min="120" max="1280" step="20" value="480"> px</span></div>
+    </div>
+    <p class="muted small" id="caps-line" style="margin-top:16px"></p>
   </section>
 </main>
 
-<script src="/static/app.js"></script>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+
+<script type="module" src="/static/js/main.js?v=2"></script>
 </body>
 </html>
