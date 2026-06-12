@@ -1,0 +1,22 @@
+{
+  "name": "pluck-node",
+  "version": "1.0.0",
+  "description": "Pluck — yt-dlp front-end metered through Mythos (Node port of the Python app)",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"tests/*.test.js\""
+  },
+  "dependencies": {
+    "@mythos/sdk": "file:../vendor/packages/node",
+    "adm-zip": "^0.5.14",
+    "cookie-session": "^2.1.0",
+    "express": "^4.19.0",
+    "express-rate-limit": "^7.4.0",
+    "ffmpeg-static": "^5.2.0"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

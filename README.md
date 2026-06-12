@@ -31,6 +31,15 @@ Verify auth & payment:
 
 ![authed](./screenshots/redesign-02-result.png)
 
+## Node twin (`node/`)
+The same app, ported 1:1 to **Node.js + Express** and integrated with the **Mythos Node SDK**
+(vendored at `vendor/packages/node`, alongside the Python SDK at `vendor/packages/python`).
+Same routes, same frontend, same SQLite job model, same pricing — run either server.
+See [node/README.md](./node/README.md):
+```bash
+cd node && npm install && npm start          # :8000  (PORT=8001 to run beside the Python app)
+```
+
 ## Scope (please read)
 Pluck downloads content you're **authorized** to download — your own uploads, public /
 Creative-Commons, or platform-permitted videos — across the 1000+ sites yt-dlp supports.
