@@ -14,7 +14,8 @@
     "cookie-session": "^2.1.0",
     "express": "^4.19.0",
     "express-rate-limit": "^7.4.0",
-    "ffmpeg-static": "^5.2.0"
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0"
   },
   "engines": {
     "node": ">=22.5.0"

@@ -9,6 +9,7 @@ __pycache__/
 *.part
 .DS_Store
 node_modules/
+.fftools/
 # Vendored SDKs: track the Node SDK source/dist (the app depends on it), but not its
 # installed deps (node_modules/, above) nor the separate Python SDK.
 vendor/packages/python/

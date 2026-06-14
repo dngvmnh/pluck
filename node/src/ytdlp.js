@@ -5,8 +5,12 @@
  */
 import { spawn } from "node:child_process";
 
-import { FFMPEG, FRAG_CONCURRENCY, INFO_TTL, PLAYLIST_CAP, STD_HEIGHTS, YT_DLP } from "./config.js";
+import { FFMPEG_DIR, FRAG_CONCURRENCY, INFO_TTL, PLAYLIST_CAP, STD_HEIGHTS, YT_DLP } from "./config.js";
 import { which } from "./capabilities.js";
+
+// yt-dlp's --ffmpeg-location wants a dir holding both ffmpeg and ffprobe; omit it when
+// we couldn't stage them so yt-dlp falls back to a system ffmpeg/ffprobe on PATH.
+const FFMPEG_LOC_ARGS = FFMPEG_DIR ? ["--ffmpeg-location", FFMPEG_DIR] : [];
 
 // 16-connection downloader, used automatically if present on PATH.
 export const ARIA2C = which("aria2c");
@@ -57,7 +61,7 @@ export function fmtDuration(secs) {
 export function ydlBaseArgs() {
   const args = [
     "--quiet", "--no-warnings", "--no-playlist",
-    "--ffmpeg-location", FFMPEG,
+    ...FFMPEG_LOC_ARGS,
     "--concurrent-fragments", String(FRAG_CONCURRENCY), // parallel DASH/HLS fragments
     "--http-chunk-size", "10M",                          // sidesteps per-connection throttling
   ];
@@ -100,7 +104,7 @@ export async function dumpJson(url, extraArgs = []) {
   return new Promise((resolve, reject) => {
     // "--" ends option parsing so a URL beginning with "-" can never be reinterpreted
     // as a yt-dlp flag (the library-based Python app is immune; the CLI here is not).
-    const child = spawn(YT_DLP, ["-J", "--no-warnings", "--ffmpeg-location", FFMPEG, ...extraArgs, "--", url],
+    const child = spawn(YT_DLP, ["-J", "--no-warnings", ...FFMPEG_LOC_ARGS, ...extraArgs, "--", url],
       { windowsHide: true });
     let out = "", err = "";
     child.stdout.on("data", (d) => { out += d; });

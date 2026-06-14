@@ -3,7 +3,9 @@
  * Importing this module configures the Mythos SDK env BEFORE the SDK is used
  * anywhere else, exactly as the Python pluck/config.py does.
  */
-import { mkdirSync } from "node:fs";
+import {
+  chmodSync, copyFileSync, existsSync, mkdirSync, rmSync, statSync, symlinkSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -25,17 +27,60 @@ export const DL_DIR = process.env.PLUCK_DL_DIR || path.join(ROOT, "downloads");
 mkdirSync(DL_DIR, { recursive: true });
 export const DB_PATH = process.env.PLUCK_DB || path.join(ROOT, "pluck.db");
 
-// ffmpeg: env override > bundled ffmpeg-static binary > PATH lookup.
+// ffmpeg + ffprobe. yt-dlp's --ffmpeg-location takes ONE path and finds ffmpeg AND
+// ffprobe in it — but ffmpeg-static and ffprobe-static install to different dirs, and
+// ffmpeg-static ships no ffprobe at all. Several yt-dlp postprocessors (duration probe,
+// metadata, merge) need ffprobe, so we stage BOTH binaries into one dir and point
+// yt-dlp at it. Direct ffmpeg calls use FFMPEG; --ffmpeg-location uses FFMPEG_DIR.
 const require = createRequire(import.meta.url);
-function resolveFfmpeg() {
-  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+
+function resolveBin(envVar, pkg, pickPath) {
+  if (process.env[envVar]) return process.env[envVar];
   try {
-    return require("ffmpeg-static");
+    const m = require(pkg);
+    return pickPath ? m.path : m;
   } catch {
-    return "ffmpeg";
+    return null;
   }
 }
-export const FFMPEG = resolveFfmpeg();
+
+function stageBinary(src, dst) {
+  if (!src || !existsSync(src)) return null;
+  try {
+    if (existsSync(dst) && statSync(dst).size > 0) return dst; // already staged
+    rmSync(dst, { force: true });
+    try { symlinkSync(src, dst); } catch { copyFileSync(src, dst); } // symlink, copy fallback
+    if (process.platform !== "win32") { try { chmodSync(dst, 0o755); } catch { /* noop */ } }
+    return dst;
+  } catch {
+    return null;
+  }
+}
+
+function resolveFfTools() {
+  const exe = process.platform === "win32" ? ".exe" : "";
+  const ffmpegSrc = resolveBin("FFMPEG_PATH", "ffmpeg-static", false);
+  const ffprobeSrc = resolveBin("FFPROBE_PATH", "ffprobe-static", true);
+
+  // Stage both into .fftools/ so --ffmpeg-location finds the pair.
+  const dir = path.join(ROOT, ".fftools");
+  let ffmpeg = null, ffprobe = null;
+  try {
+    mkdirSync(dir, { recursive: true });
+    ffmpeg = stageBinary(ffmpegSrc, path.join(dir, "ffmpeg" + exe));
+    ffprobe = stageBinary(ffprobeSrc, path.join(dir, "ffprobe" + exe));
+  } catch { /* fall through to PATH */ }
+
+  if (ffmpeg && ffprobe) return { ffmpeg, ffprobe, dir };
+  // Couldn't stage both — use whatever we resolved and let yt-dlp fall back to PATH
+  // (FFMPEG_DIR=null ⇒ ytdlp omits --ffmpeg-location, so a system ffmpeg/ffprobe wins).
+  return { ffmpeg: ffmpegSrc || "ffmpeg", ffprobe: ffprobeSrc || "ffprobe", dir: null };
+}
+
+const _ff = resolveFfTools();
+export const FFMPEG = _ff.ffmpeg;     // direct ffmpeg calls (runFfmpeg)
+export const FFPROBE = _ff.ffprobe;   // exposed for completeness / probes
+export const FFMPEG_DIR = _ff.dir;    // dir holding ffmpeg+ffprobe for yt-dlp; null ⇒ use PATH
 
 // yt-dlp binary + the python used for optional ML helpers (whisper/demucs).
 export const YT_DLP = process.env.PLUCK_YTDLP || "yt-dlp";
