@@ -13,7 +13,7 @@ os.environ["PATH"] = os.path.expanduser("~/.deno/bin") + os.pathsep + os.environ
 os.environ.setdefault("MYTHOS_API_URL", "http://localhost:4000")
 os.environ.setdefault("MYTHOS_LISTING_ID", "11111111-1111-1111-1111-111111111111")
 
-import imageio_ffmpeg  # noqa: E402  (after PATH tweak, before heavy imports)
+import shutil  # noqa: E402
 
 # ---- paths ----------------------------------------------------------------
 HERE = Path(__file__).parent          # .../pluck (the package)
@@ -23,7 +23,20 @@ DL_DIR = Path(os.environ.get("PLUCK_DL_DIR", str(ROOT / "downloads")))
 DL_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = Path(os.environ.get("PLUCK_DB", str(ROOT / "pluck.db")))
 
-FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
+def _resolve_ffmpeg() -> str:
+    """Prefer a system ffmpeg — its directory also has ffprobe, which several yt-dlp
+    postprocessors (duration probe, metadata, merge) require. Fall back to the bundled
+    imageio-ffmpeg (ffmpeg-only) when no system ffmpeg is on PATH."""
+    if os.environ.get("FFMPEG_PATH"):
+        return os.environ["FFMPEG_PATH"]
+    sys_ffmpeg = shutil.which("ffmpeg")
+    if sys_ffmpeg:
+        return sys_ffmpeg
+    import imageio_ffmpeg  # optional: only needed when there's no system ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+FFMPEG = _resolve_ffmpeg()
 
 # ---- Mythos ----------------------------------------------------------------
 MYTHOS_API = os.environ["MYTHOS_API_URL"]
