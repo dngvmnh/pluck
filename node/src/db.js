@@ -4,6 +4,9 @@
  * so readers (the polling endpoint) never block the writer. Progress updates are
  * throttled by the caller to avoid write storms.
  */
+import { rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { DB_PATH } from "./config.js";
@@ -62,23 +65,76 @@ export function closeDb() {
   }
 }
 
-function conn() {
-  if (!_db) {
-    _db = new DatabaseSync(_dbPath);
-    // WAL gives non-blocking reads while a job writes progress, but it relies on a
-    // shared-memory (-shm) mmap that some filesystems can't provide — notably Windows
-    // drives mounted in WSL at /mnt/c (DrvFs) and network shares, where it raises
-    // "disk I/O error". Fall back to the default rollback journal there so the app
-    // still runs; correctness is unchanged, only the read/write concurrency differs.
-    try {
-      _db.exec("PRAGMA journal_mode=WAL");
-      _db.exec("PRAGMA synchronous=NORMAL");
-    } catch {
-      _db.exec("PRAGMA journal_mode=DELETE");
-      _db.exec("PRAGMA synchronous=FULL");
-    }
-    _db.exec("PRAGMA busy_timeout=30000");
+// A SQLite I/O error (disk I/O / SHMOPEN / locking) — the class of failure seen on
+// Windows drives mounted in WSL at /mnt/c and on network shares. The low byte of
+// errcode is SQLITE_IOERR (10) for all of its extended variants.
+function isIoError(e) {
+  return e?.code === "ERR_SQLITE_ERROR" &&
+    (/disk i\/o/i.test(e.errstr || "") ||
+     (typeof e.errcode === "number" && (e.errcode & 0xff) === 10));
+}
+
+function rmDbFiles(dbPath) {
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+    try { rmSync(dbPath + suffix, { force: true }); } catch { /* best-effort */ }
   }
+}
+
+// Open + configure a connection, then run a tiny write so a filesystem that can't
+// host SQLite (mmap/locking) fails HERE — inside the recoverable path — rather than
+// later on the first real query.
+function openWith(dbPath, wal) {
+  const db = new DatabaseSync(dbPath);
+  try {
+    if (wal) {
+      db.exec("PRAGMA journal_mode=WAL");      // non-blocking reads during writes
+      db.exec("PRAGMA synchronous=NORMAL");
+    } else {
+      db.exec("PRAGMA locking_mode=EXCLUSIVE"); // take the file lock once, hold it
+      db.exec("PRAGMA journal_mode=DELETE");    // rollback journal, no -shm/-wal sidecars
+      db.exec("PRAGMA synchronous=FULL");
+    }
+    db.exec("PRAGMA busy_timeout=30000");
+    db.exec("CREATE TABLE IF NOT EXISTS _pluck_probe(x)");
+    db.exec("DROP TABLE _pluck_probe");
+    return db;
+  } catch (e) {
+    try { db.close(); } catch { /* ignore */ }
+    throw e;
+  }
+}
+
+function conn() {
+  if (_db) return _db;
+
+  // Tier 1 — WAL at the configured path (the fast path on native filesystems).
+  try {
+    _db = openWith(_dbPath, true);
+    return _db;
+  } catch (e) {
+    if (!isIoError(e)) throw e;
+  }
+
+  // Tier 2 — WAL needs a shared-memory (-shm) mmap that some filesystems can't
+  // provide (Windows drives mounted in WSL at /mnt/c, network shares); the file may
+  // also be wedged in WAL state from a prior failed open. The job cache is
+  // disposable, so wipe it and reopen in a sidecar-free rollback journal mode.
+  rmDbFiles(_dbPath);
+  try {
+    _db = openWith(_dbPath, false);
+    console.warn(`[pluck] SQLite WAL unavailable here; using rollback-journal mode for ${_dbPath}`);
+    return _db;
+  } catch (e) {
+    if (!isIoError(e)) throw e;
+  }
+
+  // Tier 3 — the filesystem can't host SQLite at all. Relocate the job cache to a
+  // native-filesystem temp dir so the app still runs (downloads stay in DL_DIR).
+  const alt = path.join(os.tmpdir(),
+    `pluck-jobs-${Buffer.from(_dbPath).toString("hex").slice(0, 16)}.db`);
+  _db = openWith(alt, true);
+  console.warn(`[pluck] SQLite could not use ${_dbPath} (disk I/O error); job cache relocated to ${alt}`);
+  _dbPath = alt;
   return _db;
 }
 
