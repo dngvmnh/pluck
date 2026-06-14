@@ -33,7 +33,21 @@ export const CONVERT_TARGETS = new Set(["mp4", "mkv", "webm", "mp3", "m4a", "opu
 export class ValidationError extends Error {}
 
 function str(v, dflt = "") {
-  return v == null ? dflt : String(v);
+  if (v == null) return dflt;
+  // Like a Pydantic v2 `str` field: don't silently coerce numbers/objects/bools into
+  // strings (that would turn url:123 into "123" or url:{} into "[object Object]" and
+  // create a charged job against garbage). Reject them, matching the Python 422.
+  if (typeof v !== "string") throw new ValidationError(`expected string, got ${JSON.stringify(v)}`);
+  return v;
+}
+
+function num(v, dflt) {
+  if (v == null) return dflt;
+  const n = Number(v);
+  if (typeof v === "boolean" || !Number.isFinite(n)) {
+    throw new ValidationError(`expected number, got ${JSON.stringify(v)}`);
+  }
+  return n;
 }
 
 function bool(v, dflt = false) {
@@ -59,7 +73,10 @@ export function parseDownloadReq(body) {
   let urls = null;
   if (b.urls != null) {
     if (!Array.isArray(b.urls)) throw new ValidationError("urls must be a list");
-    urls = b.urls.map((u) => str(u));
+    urls = b.urls.map((u) => {
+      if (typeof u !== "string") throw new ValidationError(`urls elements must be strings, got ${JSON.stringify(u)}`);
+      return u;
+    });
   }
   return {
     url: str(b.url),
@@ -76,7 +93,7 @@ export function parseDownloadReq(body) {
     sponsorblock: bool(b.sponsorblock),         // cut sponsor/intro/outro segments
     remaster: bool(b.remaster),                 // audio denoise/normalize (modifier on audio/remaster)
     playlist: bool(b.playlist),                 // bulk download a playlist/channel
-    min_minutes: b.min_minutes == null ? null : Number(b.min_minutes), // smart filter
+    min_minutes: num(b.min_minutes, null), // smart filter (reject non-numeric, like the float field)
     keyword: b.keyword == null ? null : str(b.keyword),                // smart filter
   };
 }

@@ -9,3 +9,4 @@ __pycache__/
 *.part
 .DS_Store
 vendor/
+node_modules/

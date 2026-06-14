@@ -65,8 +65,18 @@ export function closeDb() {
 function conn() {
   if (!_db) {
     _db = new DatabaseSync(_dbPath);
-    _db.exec("PRAGMA journal_mode=WAL");
-    _db.exec("PRAGMA synchronous=NORMAL");
+    // WAL gives non-blocking reads while a job writes progress, but it relies on a
+    // shared-memory (-shm) mmap that some filesystems can't provide — notably Windows
+    // drives mounted in WSL at /mnt/c (DrvFs) and network shares, where it raises
+    // "disk I/O error". Fall back to the default rollback journal there so the app
+    // still runs; correctness is unchanged, only the read/write concurrency differs.
+    try {
+      _db.exec("PRAGMA journal_mode=WAL");
+      _db.exec("PRAGMA synchronous=NORMAL");
+    } catch {
+      _db.exec("PRAGMA journal_mode=DELETE");
+      _db.exec("PRAGMA synchronous=FULL");
+    }
     _db.exec("PRAGMA busy_timeout=30000");
   }
   return _db;

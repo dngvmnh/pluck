@@ -55,13 +55,24 @@ if (!IS_DEV && SESSION_SECRET === _DEV_SECRET) {
     "(MYTHOS_ENV=production). Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"");
 }
 
+// Parse an integer env var the way Python's int() does: reject non-integers loudly
+// at startup rather than letting a NaN silently disable the worker cap / TTL / etc.
+export function intEnv(name, dflt) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return dflt;
+  if (!/^[+-]?\d+$/.test(raw.trim())) {
+    throw new Error(`${name} must be an integer, got ${JSON.stringify(raw)}`);
+  }
+  return parseInt(raw, 10);
+}
+
 // ---- job engine ------------------------------------------------------------
-export const MAX_WORKERS = parseInt(process.env.PLUCK_MAX_WORKERS || "8", 10);
-export const JOB_TTL = parseInt(process.env.PLUCK_JOB_TTL || "86400", 10); // seconds before job + files are reaped
-export const PLAYLIST_CAP = parseInt(process.env.PLAYLIST_CAP || "10", 10);
+export const MAX_WORKERS = intEnv("PLUCK_MAX_WORKERS", 8);
+export const JOB_TTL = intEnv("PLUCK_JOB_TTL", 86400); // seconds before job + files are reaped
+export const PLAYLIST_CAP = intEnv("PLAYLIST_CAP", 10);
 
 // ---- download tuning -------------------------------------------------------
-export const FRAG_CONCURRENCY = parseInt(process.env.PLUCK_FRAGMENTS || "8", 10);
+export const FRAG_CONCURRENCY = intEnv("PLUCK_FRAGMENTS", 8);
 export const INFO_TTL = 300; // seconds to trust a cached /api/info result
 export const STD_HEIGHTS = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320];
 

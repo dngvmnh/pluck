@@ -63,6 +63,9 @@ export class JobCtx {
 
 // "[download]  45.3% of  10.51MiB at    2.31MiB/s ETA 00:05"
 const PROGRESS_RE = /\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+)(\w+)(?:\s+at\s+(\S+))?(?:\s+ETA\s+(\S+))?/;
+// Unknown total size (live/HLS): "[download]  10.51MiB at 2.31MiB/s ETA 00:05" — no "% of".
+// Python's hook still fires status=downloading (progress=None) for these, so we mirror that.
+const NO_PCT_RE = /\[download\]\s+~?\s*[\d.]+\w+\s+at\s+(\S+)(?:\s+ETA\s+(\S+))?/;
 const DEST_RE = /\[download\] Destination: (.+)$/;
 
 const UNIT = { B: 1, KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3, TiB: 1024 ** 4 };
@@ -94,6 +97,17 @@ export function runYtdlp(ctx, args, urls) {
           totalBytes: Math.round(Number(num) * (UNIT[unit] || 1)),
           speed: (speed || "").trim(),
           eta: (eta || "").trim(),
+        });
+        return;
+      }
+      const np = NO_PCT_RE.exec(line);
+      if (np) {
+        ctx.onProgress({
+          status: "downloading",
+          percent: null,          // unknown total -> no percentage (Python writes progress=None)
+          totalBytes: 0,
+          speed: (np[1] || "").trim(),
+          eta: (np[2] || "").trim(),
         });
         return;
       }
@@ -137,6 +151,10 @@ export function zipFiles(paths, zipPath) {
   const zip = new AdmZip();
   for (const p of [...paths].sort()) {
     zip.addLocalFile(p);
+  }
+  // Match Python's zipfile.ZIP_STORED: no compression (method 0), fast for large media.
+  for (const entry of zip.getEntries()) {
+    entry.header.method = 0;
   }
   zip.writeZip(zipPath);
   return zipPath;

@@ -44,8 +44,10 @@ with srt.open("w", encoding="utf-8") as fsrt, txt.open("w", encoding="utf-8") as
 export async function transcribeFile(src) {
   let result;
   try {
+    // No timeout: the Python app runs faster-whisper in-process with none, and CPU
+    // transcription of long audio can legitimately exceed an hour.
     result = await execFileP(PYTHON, ["-c", WHISPER_SCRIPT, src, WHISPER_MODEL],
-      { windowsHide: true, timeout: 3_600_000, maxBuffer: 16 * 1024 * 1024 });
+      { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
   } catch (e) {
     const err = String(e.stderr || e.message || "");
     if (/No module named/i.test(err)) {

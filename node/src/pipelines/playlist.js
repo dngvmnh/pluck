@@ -7,12 +7,22 @@ import { PLAYLIST_CAP } from "../config.js";
 import { mediaFiles, runYtdlp, zipFiles } from "./base.js";
 import { ydlBaseArgs } from "../ytdlp.js";
 
+/** Recover a clean-ish title from the outtmpl filename "001-Title.f137.webm" so the
+ * progress label reads like Python's info_dict title rather than a raw download path. */
+function labelFromFilename(name) {
+  let s = name.replace(/\.[^.]+$/, "");      // drop extension
+  s = s.replace(/\.f\d+$/, "");              // drop yt-dlp intermediate format id (.f137)
+  s = s.replace(/^\d{1,4}-/, "");            // drop the playlist-index prefix
+  return s.slice(0, 70);
+}
+
 function matchFilter(req) {
   const mf = [];
   if (req.min_minutes) mf.push(`duration > ${Number(req.min_minutes) * 60}`);
   if (req.keyword) {
-    // escape regex metacharacters like Python's re.escape
-    const kw = req.keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Match Python 3.7+ re.escape: backslash-escape every ASCII non-alphanumeric/underscore
+    // char (incl. & ~ # - space), else yt-dlp's match-filter grammar splits on a raw '&'.
+    const kw = req.keyword.replace(/[^A-Za-z0-9_]/g, "\\$&");
     mf.push(`title ~= '(?i)${kw}'`);
   }
   return mf.length ? mf.join(" & ") : null;
@@ -26,7 +36,7 @@ export async function run(ctx) {
   // (the CLI analogue of the custom hook in the Python pipeline).
   ctx.onProgress = (p) => {
     if (p.status === "destination") {
-      ctx.update({ status: "downloading", label: (p.filename || "").slice(0, 70), items_done: done });
+      ctx.update({ status: "downloading", label: labelFromFilename(p.filename || ""), items_done: done });
     } else if (p.status === "downloading") {
       ctx.update({ status: "downloading", speed: p.speed || "", items_done: done });
     } else if (p.status === "finished") {

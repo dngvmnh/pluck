@@ -4,10 +4,13 @@
  * the frontend can show a live estimate without duplicating the numbers.
  * Mirrors pluck/pricing.py exactly.
  */
+import { intEnv } from "./config.js";
 import { OutputMode } from "./models.js";
 import { parseHms } from "./ytdlp.js";
 
-const BASE = parseInt(process.env.CREDITS_PER_DOWNLOAD || "2", 10);
+// Strict like Python's int(): a misconfigured CREDITS_PER_DOWNLOAD fails at startup
+// rather than poisoning every job's price with NaN.
+const BASE = intEnv("CREDITS_PER_DOWNLOAD", 2);
 
 // Per-feature surcharges added on top of BASE.
 export const PRICING = Object.freeze({

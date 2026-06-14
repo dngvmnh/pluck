@@ -15,14 +15,30 @@ export const ARIA2C = which("aria2c");
 export const INFO_CACHE = new Map();           // url -> [ts, data]
 export const CHANNEL_AVATAR_CACHE = new Map(); // channel_id -> url|null
 
+/** Parse one colon-segment the way Python's float() does, so parseHms accepts/rejects
+ * exactly what parse_hms does (this gates the +1 'trim' surcharge in pricing). float()
+ * accepts inf/infinity/nan and scientific notation but rejects hex like '0x10' — whereas
+ * JS Number() would silently accept '0x10'=16, charging trim where Python charges none. */
+function pyFloat(tok) {
+  const t = tok.trim();
+  if (t === "") return null;
+  const low = t.toLowerCase();
+  if (/^[+-]?(inf|infinity)$/.test(low)) return low[0] === "-" ? -Infinity : Infinity;
+  if (/^[+-]?nan$/.test(low)) return NaN;
+  // decimal / scientific only — reject 0x/0o/0b and other JS-only numeric forms
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(t)) return null;
+  return Number(t);
+}
+
 /** '90' / '1:30' / '01:02:03' -> seconds (float), or null. */
 export function parseHms(s) {
   if (!s) return null;
-  const parts = String(s).trim().split(":");
+  const parts = String(s).split(":");
   let sec = 0;
   for (const p of parts) {
-    if (p === "" || !Number.isFinite(Number(p))) return null;
-    sec = sec * 60 + Number(p);
+    const n = pyFloat(p);
+    if (n === null) return null;
+    sec = sec * 60 + n;
   }
   return sec;
 }
@@ -72,15 +88,19 @@ export function formatSelector(choice) {
   if (choice === "audio-mp3") {
     return ["ba/b", ["--extract-audio", "--audio-format", "mp3", "--audio-quality", "192K"]];
   }
+  // Strict like Python int(choice): "720p"/"1e3"/"5x" must error, not silently
+  // truncate to a height (which would download wrong + still charge).
+  if (!/^\d+$/.test(choice)) throw new Error(`unknown quality choice: ${choice}`);
   const h = parseInt(choice, 10);
-  if (!Number.isFinite(h)) throw new Error(`unknown quality choice: ${choice}`);
   return [`bv*[height<=${h}]+ba/b[height<=${h}]/b`, []];
 }
 
 /** Run yt-dlp with -J and parse the JSON info dict. Throws Error with a short message. */
 export async function dumpJson(url, extraArgs = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn(YT_DLP, ["-J", "--no-warnings", "--ffmpeg-location", FFMPEG, ...extraArgs, url],
+    // "--" ends option parsing so a URL beginning with "-" can never be reinterpreted
+    // as a yt-dlp flag (the library-based Python app is immune; the CLI here is not).
+    const child = spawn(YT_DLP, ["-J", "--no-warnings", "--ffmpeg-location", FFMPEG, ...extraArgs, "--", url],
       { windowsHide: true });
     let out = "", err = "";
     child.stdout.on("data", (d) => { out += d; });
