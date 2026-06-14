@@ -78,7 +78,9 @@ function b64url(buf) {
   return Buffer.from(buf).toString("base64url");
 }
 
-async function mintLaunchToken({ jti = randomUUID(), iss = MYTHOS_URL } = {}) {
+// The real Mythos platform issues iss:'mythos' (backend apps.service.ts), which is
+// what the SDK validates against — NOT the API URL.
+async function mintLaunchToken({ jti = randomUUID(), iss = "mythos" } = {}) {
   const { createSign } = await import("node:crypto");
   const now = Math.floor(Date.now() / 1000);
   const header = b64url(JSON.stringify({ alg: "RS256", kid: "k1", typ: "JWT" }));
