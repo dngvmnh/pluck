@@ -23,9 +23,16 @@ const mythos = createServer((req, res) => {
     res.writeHead(code, { "Content-Type": "application/json" });
     res.end(JSON.stringify(body));
   };
-  if (req.url === "/.well-known/jwks.json") {
+  const jwkDoc = () => {
     const jwk = publicKey.export({ format: "jwk" });
-    return send(200, { keys: [{ ...jwk, kid: "k1", alg: "RS256", use: "sig" }] });
+    return { keys: [{ ...jwk, kid: "k1", alg: "RS256", use: "sig" }] };
+  };
+  // Per-listing JWKS in the platform's { success, data } envelope (what the SDK fetches).
+  if (/^\/api\/listings\/[^/]+\/jwks$/.test(req.url)) {
+    return send(200, { success: true, data: jwkDoc() });
+  }
+  if (req.url === "/.well-known/jwks.json") {
+    return send(200, jwkDoc()); // raw (legacy/global)
   }
   const consume = req.url.match(/^\/api\/apps\/sessions\/([^/]+)\/consume$/);
   if (consume) {

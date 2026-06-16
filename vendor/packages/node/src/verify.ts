@@ -1,12 +1,27 @@
-import { jwtVerify } from 'jose';
+import { decodeJwt, jwtVerify } from 'jose';
 import { getKeySet, getKeySetWithKidFallback } from './jwks-cache';
 import { loadConfig } from './config';
 import type { MythosSession } from './types';
 
+// Pick which listing's JWKS to fetch from the token's (unverified) audience. Reading
+// aud before verifying is safe: it only selects the key set; a mismatched/forged aud
+// just yields keys that can't validate the signature, so verification still fails.
+function pickListingId(token: string, listingIds: string[]): string {
+  try {
+    const aud = decodeJwt(token).aud;
+    const a = Array.isArray(aud) ? aud[0] : aud;
+    if (a && listingIds.includes(a)) return a;
+  } catch {
+    // malformed token — fall back; jwtVerify will reject it anyway
+  }
+  return listingIds[0];
+}
+
 export async function verifyLaunchToken(token: string): Promise<MythosSession> {
   const { listingIds, apiUrl, issuer } = loadConfig();
+  const listingId = pickListingId(token, listingIds);
 
-  let keySet = await getKeySet(apiUrl);
+  let keySet = await getKeySet(apiUrl, listingId);
 
   let payload;
   try {
@@ -20,7 +35,7 @@ export async function verifyLaunchToken(token: string): Promise<MythosSession> {
     if (!isKidError) throw err;
 
     // kid miss — re-fetch once
-    keySet = await getKeySetWithKidFallback(apiUrl);
+    keySet = await getKeySetWithKidFallback(apiUrl, listingId);
     ({ payload } = await jwtVerify(token, keySet, {
       algorithms: ['RS256'],
       issuer,

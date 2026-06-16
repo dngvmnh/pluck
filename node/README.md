@@ -72,9 +72,31 @@ The integration suite (`tests/integration-mythos.test.js`) spins up a **mock Myt
 - `/consume` backend error → **503, no session** (fail-closed)
 - a download charges exactly once through `reportUsage`
 
+## Point at a real Mythos backend (e.g. staging)
+
+Nothing is hard-coded to the mock — it's all env. To run against staging:
+
+```bash
+MYTHOS_API_URL=https://staging-be.mythos.work \
+MYTHOS_LISTING_ID=<your-pluck-listing-uuid-on-staging> \
+PORT=8000 npm start
+```
+
+- `MYTHOS_ISSUER` defaults to `mythos` (what the platform mints), so you don't set it.
+- The SDK fetches signing keys from the platform's **per-listing** endpoint
+  `GET /api/listings/:listingId/jwks` (unwrapping its `{success,data}` envelope) — not the
+  empty global `/.well-known/jwks.json`. So `MYTHOS_LISTING_ID` **must** be the real
+  listing UUID assigned when Pluck is registered on that Mythos instance (a fake id is
+  rejected as "not a valid UUID v4").
+- Launch from that Mythos instance's marketplace (not the mock's `/open/pluck`); the listing's
+  configured launch URL must point at this server's `/dashboard` (e.g. `http://localhost:8000/dashboard`
+  for local testing).
+- Wallet-balance display needs the platform's wallet endpoint; if it isn't exposed to producers
+  the balance simply shows blank (downloads still meter normally).
+
 ## Env
 
-Same variables as the Python app: `PORT`, `MYTHOS_API_URL`, `MYTHOS_LISTING_ID`, `MYTHOS_ENV`,
+Same variables as the Python app: `PORT`, `MYTHOS_API_URL`, `MYTHOS_LISTING_ID`, `MYTHOS_ISSUER`, `MYTHOS_ENV`,
 `SESSION_SECRET` (**required** when `MYTHOS_ENV=production`), `CREDITS_PER_DOWNLOAD`,
 `PLUCK_DB`, `PLUCK_DL_DIR`, `PLUCK_MAX_WORKERS`, `PLUCK_JOB_TTL`, `PLAYLIST_CAP`,
 `PLUCK_FRAGMENTS`, `PLUCK_WHISPER_MODEL`, `PLUCK_DEMUCS_MODEL` — plus Node-specific
