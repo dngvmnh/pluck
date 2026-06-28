@@ -15,9 +15,9 @@ import { fileURLToPath } from "node:url";
 const sep = process.platform === "win32" ? ";" : ":";
 process.env.PATH = path.join(os.homedir(), ".deno", "bin") + sep + (process.env.PATH || "");
 
-// Pluck is a Mythos Producer — configure the SDK BEFORE using it.
-process.env.MYTHOS_API_URL ??= "http://localhost:4000";
-process.env.MYTHOS_LISTING_ID ??= "11111111-1111-1111-1111-111111111111";
+// Pluck is a Mythos Producer — MYTHOS_API_URL and MYTHOS_LISTING_ID must be
+// set in the environment. No defaults: a missing value surfaces at request time
+// via the SDK's own error rather than silently hitting localhost.
 
 // ---- paths ----------------------------------------------------------------
 const HERE = path.dirname(fileURLToPath(import.meta.url)); // .../node/src

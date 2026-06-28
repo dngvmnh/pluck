@@ -20,22 +20,14 @@ export function consumer(req) {
   return m;
 }
 
-export async function walletBalance(userId) {
-  try {
-    const r = await fetch(`${MYTHOS_API}/api/wallet/${userId}`);
-    if (r.status !== 200) return null;
-    const body = await r.json();
-    return body.balance ?? null;
-  } catch {
-    return null;
-  }
+// The real Mythos BE scopes GET /api/wallet to the user's own Bearer token;
+// Pluck's server only has userId from the launch JWT, not the Bearer token.
+// Balance is visible in the Mythos platform chrome — no need to duplicate it here.
+export async function walletBalance(_userId) {
+  return null;
 }
 
-export async function walletTopup(userId, amount = 10) {
-  await fetch(`${MYTHOS_API}/api/wallet/topup`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId, amount }),
-  });
-  return walletBalance(userId);
+// Producer-side top-up has no equivalent on the real platform.
+export async function walletTopup(_userId, _amount = 10) {
+  return null;
 }
