@@ -11,6 +11,7 @@
   "dependencies": {
     "@mythos/sdk": "file:../vendor/packages/node",
     "adm-zip": "^0.5.14",
+    "jose": "^5.0.0",
     "cookie-session": "^2.1.0",
     "express": "^4.19.0",
     "express-rate-limit": "^7.4.0",
