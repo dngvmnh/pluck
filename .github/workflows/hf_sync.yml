@@ -12,13 +12,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Push to Hub (orphan — no history, avoids large files from old commits)
+      - name: Sync to HF Spaces via huggingface_hub (handles Xet binary storage)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          git config user.email "ci@github-actions"
-          git config user.name "GitHub Actions"
-          git checkout --orphan hf-deploy
-          git add -A
-          git commit -m "Deploy to Hugging Face Spaces"
-          git push --force https://dngvmnh:${HF_TOKEN}@huggingface.co/spaces/dngvmnh/pluck hf-deploy:main
+          pip install "huggingface_hub>=0.24.0"
+          python - <<'PYEOF'
+          import os
+          from huggingface_hub import HfApi
+
+          api = HfApi()
+          api.upload_folder(
+              folder_path=".",
+              repo_id="dngvmnh/pluck",
+              repo_type="space",
+              token=os.environ["HF_TOKEN"],
+              commit_message="Sync from GitHub",
+              ignore_patterns=[
+                  ".git",
+                  "**/__pycache__",
+                  "**/.pytest_cache",
+                  "**/*.pyc",
+                  "*.db",
+                  "*.db-wal",
+                  "*.db-shm",
+                  "downloads/**",
+                  ".venv/**",
+                  "screenshots/**",
+                  "node/.fftools/**",
+              ],
+          )
+          PYEOF
