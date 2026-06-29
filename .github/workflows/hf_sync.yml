@@ -11,11 +11,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-          lfs: true
 
-      - name: Push to Hub
+      - name: Push to Hub (orphan — no history, avoids large files from old commits)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push --force https://dngvmnh:$HF_TOKEN@huggingface.co/spaces/dngvmnh/pluck main
+        run: |
+          git checkout --orphan hf-deploy
+          git add -A
+          git commit -m "Deploy to Hugging Face Spaces"
+          git push --force https://dngvmnh:${HF_TOKEN}@huggingface.co/spaces/dngvmnh/pluck hf-deploy:main
