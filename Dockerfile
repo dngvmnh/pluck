@@ -16,4 +16,6 @@ COPY node/ ./node/
 
 WORKDIR /app/node
 ENV PORT=8000
+ENV PLUCK_DB=/tmp/pluck.db
+ENV PLUCK_DL_DIR=/tmp/pluck-downloads
 CMD ["npm", "start"]
