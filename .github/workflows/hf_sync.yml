@@ -16,6 +16,8 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          git config user.email "ci@github-actions"
+          git config user.name "GitHub Actions"
           git checkout --orphan hf-deploy
           git add -A
           git commit -m "Deploy to Hugging Face Spaces"
