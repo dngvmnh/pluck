@@ -69,9 +69,12 @@ export function closeDb() {
 // Windows drives mounted in WSL at /mnt/c and on network shares. The low byte of
 // errcode is SQLITE_IOERR (10) for all of its extended variants.
 function isIoError(e) {
-  return e?.code === "ERR_SQLITE_ERROR" &&
-    (/disk i\/o/i.test(e.errstr || "") ||
-     (typeof e.errcode === "number" && (e.errcode & 0xff) === 10));
+  if (e?.code !== "ERR_SQLITE_ERROR") return false;
+  if (/disk i\/o/i.test(e.errstr || "")) return true;
+  if (typeof e.errcode !== "number") return false;
+  const base = e.errcode & 0xff;
+  return base === 10  // SQLITE_IOERR
+      || base === 14; // SQLITE_CANTOPEN (directory not writable / non-existent)
 }
 
 function rmDbFiles(dbPath) {
