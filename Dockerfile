@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 # vendor must be copied first — node/package.json references it via file:../vendor/packages/node
 COPY vendor/packages/node/ ./vendor/packages/node/
+# Install SDK's own deps (jose) so require('jose') resolves from the real symlink target path
+RUN cd vendor/packages/node && npm install --omit=dev --ignore-scripts
 COPY node/package*.json ./node/
 RUN cd node && npm ci --omit=dev
 COPY node/ ./node/
