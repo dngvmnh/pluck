@@ -13,5 +13,5 @@ RUN cd node && npm ci --omit=dev
 COPY node/ ./node/
 
 WORKDIR /app/node
-ENV PORT=8080
+ENV PORT=8000
 CMD ["npm", "start"]

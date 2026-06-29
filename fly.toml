@@ -1,6 +1,6 @@
 # Deploy: flyctl launch (first time) or flyctl deploy
 # Secrets: flyctl secrets set MYTHOS_API_URL=... MYTHOS_LISTING_ID=... SESSION_SECRET=...
-app = "pluck"
+app = "pluck-mythos"
 primary_region = "sin"
 
 [build]
